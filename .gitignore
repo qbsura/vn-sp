@@ -1,0 +1,78 @@
+# =============================================================================
+# VNSP — .gitignore
+# =============================================================================
+
+# ── macOS ─────────────────────────────────────────────────────────────────────
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# ── Virtual environments ──────────────────────────────────────────────────────
+.venv/
+venv/
+env/
+.env
+
+# ── uv ───────────────────────────────────────────────────────────────────────
+# uv.lock được commit để đảm bảo reproducibility — KHÔNG ignore
+# .python-version được commit — KHÔNG ignore
+
+# ── Jupyter ───────────────────────────────────────────────────────────────────
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# ── Raw data — KHÔNG commit lên git (file lớn, tải lại được) ─────────────────
+data/raw/*.csv
+data/raw/*.parquet
+
+# Giữ lại placeholder để git track thư mục
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+
+# ── Processed data — file lớn, generate lại được từ raw ─────────────────────
+data/processed/*.pkl
+data/processed/*.parquet
+data/processed/*.npy
+data/figures/*.png
+data/figures/*.jpg
+
+# ── Model artifacts — file lớn ───────────────────────────────────────────────
+experiments/
+# Uncommit dòng dưới nếu muốn track experiments
+# !experiments/.gitkeep
+
+# ── IDE & Editor ─────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ── Testing & Coverage ────────────────────────────────────────────────────────
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# ── Logs ─────────────────────────────────────────────────────────────────────
+*.log
+logs/
+
+# ── OS misc ──────────────────────────────────────────────────────────────────
+*.bak
+*.tmp
