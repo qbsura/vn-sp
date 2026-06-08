@@ -17,9 +17,9 @@ dependencies = [
     # Hyperparameter optimization
     "optuna>=3.6.0",
     # API backend
-    "fastapi>=0.111.0",
-    "uvicorn[standard]>=0.30.0",
-    # Vietnam stock data (v3.x — API mới: Quote(symbol, source).history())
+    # [standard] bao gồm: uvicorn, python-multipart, httpx, fastapi CLI
+    "fastapi[standard]>=0.111.0",
+    # Vietnam stock data
     "vnstock>=3.2.0",
     # Visualization
     "matplotlib>=3.9.0",
@@ -33,11 +33,12 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["app"]
 
-[tool.uv]
-dev-dependencies = [
+# Dev dependencies — dùng [dependency-groups] thay vì [tool.uv] (uv >= 0.4)
+[dependency-groups]
+dev = [
     "pytest>=8.2.0",
     "pytest-asyncio>=0.23.0",
-    "httpx>=0.27.0",   # FastAPI test client
+    "httpx>=0.27.0",    # FastAPI test client
     "jupyter>=1.0.0",
     "ipykernel>=6.29.0",
 ]
