@@ -509,6 +509,9 @@
         <div class="card">
           <div class="card-header">
             <span class="card-title">Table 1 — Model Performance (Before / After Wavelet)</span>
+            <span style="font-size:0.75rem;color:var(--clr-muted);margin-left:auto">
+              Mean across 3 folds — Fold selector ảnh hưởng các charts bên dưới
+            </span>
           </div>
           <div class="card-body no-pad">
             <div class="table-wrapper">
@@ -532,41 +535,96 @@
           </div>
         </div>
 
-        <!-- Predicted vs Actual -->
+        <!-- MSE Comparison Bar Chart (tải cùng Load Results, tách riêng khỏi Predicted vs Actual) -->
+        <div class="card">
+          <div class="card-header">
+            <span class="card-title">MSE Comparison — Before vs After Wavelet</span>
+          </div>
+          <div class="card-body">
+            <canvas id="chart-mse-comparison" class="chart-canvas" aria-label="MSE comparison chart"></canvas>
+            <div class="chart-placeholder" id="mse-comparison-placeholder">Click "Load Results" to render MSE chart</div>
+          </div>
+        </div>
+
+        <!-- Predicted vs Actual — hiển thị cả 5 models cùng lúc, mỗi model 1 màu -->
         <div class="card">
           <div class="card-header">
             <span class="card-title">Predicted vs Actual Price</span>
             <div class="header-controls-inline">
-              <select class="select select-sm" id="pred-model">
-                <option value="BiLSTM">BiLSTM</option>
-                <option value="LSTM">LSTM</option>
-                <option value="GRU">GRU</option>
-                <option value="RNN">RNN</option>
-                <option value="DNN">DNN</option>
-              </select>
+              <!-- Model dropdown đã bỏ — load cả 5 models tự động -->
               <select class="select select-sm" id="pred-wavelet">
                 <option value="true">Wavelet</option>
                 <option value="false">No-Wave</option>
               </select>
-              <button class="btn btn-sm btn-outline" id="btn-load-pred-chart">Load Chart</button>
+              <button class="btn btn-sm btn-outline" id="btn-load-pred-chart">Load Chart (5 Models)</button>
             </div>
           </div>
           <div class="card-body">
-            <!-- Chart.js canvas — dùng ở Task 8.2 -->
+            <!-- Hiển thị 5 model predictions (đường đứt, màu khác nhau) + 1 Actual (trắng) -->
             <canvas id="chart-pred-actual" class="chart-canvas" aria-label="Predicted vs Actual price chart"></canvas>
-            <div class="chart-placeholder" id="pred-chart-placeholder">Select model and click "Load Chart"</div>
+            <div class="chart-placeholder" id="pred-chart-placeholder">Select wavelet condition and click "Load Chart"</div>
+            <!-- Zoom hint — hiển thị sau khi chart load -->
+            <div id="pred-zoom-hint"
+                 style="display:none;font-size:0.7rem;color:var(--clr-muted);text-align:center;margin-top:0.4rem;font-family:var(--font-mono)">
+              🔍 Scroll to zoom · Drag to pan · Double-click to reset
+            </div>
           </div>
         </div>
 
-        <!-- Loss curves -->
+        <!-- Training Loss Curves — 5 panels riêng cho 5 models -->
         <div class="card">
           <div class="card-header">
             <span class="card-title">Training Loss Curves</span>
-            <button class="btn btn-sm btn-outline" id="btn-load-loss">Load Loss</button>
+            <div class="header-controls-inline">
+              <!-- Dùng chung pred-wavelet và reg-fold selector từ controls-row phía trên -->
+              <button class="btn btn-sm btn-outline" id="btn-load-loss">Load All Loss Curves</button>
+            </div>
           </div>
           <div class="card-body">
-            <canvas id="chart-loss-curves" class="chart-canvas" aria-label="Training loss curves"></canvas>
-            <div class="chart-placeholder" id="loss-placeholder">Click "Load Loss" to view train/val loss per epoch</div>
+            <!-- 5 panels trong 2-col grid (DNN|RNN, GRU|LSTM, BiLSTM center) -->
+            <div class="two-col-grid" style="gap:1rem">
+              <div>
+                <div style="font-size:0.75rem;color:var(--clr-muted);margin-bottom:0.4rem;font-family:var(--font-mono)">
+                  DNN
+                </div>
+                <canvas id="chart-loss-DNN" class="chart-canvas" style="max-height:200px"
+                        aria-label="DNN loss curves"></canvas>
+                <div class="chart-placeholder" id="loss-DNN-placeholder" style="min-height:120px">—</div>
+              </div>
+              <div>
+                <div style="font-size:0.75rem;color:var(--clr-muted);margin-bottom:0.4rem;font-family:var(--font-mono)">
+                  RNN
+                </div>
+                <canvas id="chart-loss-RNN" class="chart-canvas" style="max-height:200px"
+                        aria-label="RNN loss curves"></canvas>
+                <div class="chart-placeholder" id="loss-RNN-placeholder" style="min-height:120px">—</div>
+              </div>
+              <div>
+                <div style="font-size:0.75rem;color:var(--clr-muted);margin-bottom:0.4rem;font-family:var(--font-mono)">
+                  GRU
+                </div>
+                <canvas id="chart-loss-GRU" class="chart-canvas" style="max-height:200px"
+                        aria-label="GRU loss curves"></canvas>
+                <div class="chart-placeholder" id="loss-GRU-placeholder" style="min-height:120px">—</div>
+              </div>
+              <div>
+                <div style="font-size:0.75rem;color:var(--clr-muted);margin-bottom:0.4rem;font-family:var(--font-mono)">
+                  LSTM
+                </div>
+                <canvas id="chart-loss-LSTM" class="chart-canvas" style="max-height:200px"
+                        aria-label="LSTM loss curves"></canvas>
+                <div class="chart-placeholder" id="loss-LSTM-placeholder" style="min-height:120px">—</div>
+              </div>
+            </div>
+            <!-- BiLSTM (main model) — chiếm full width, cao hơn -->
+            <div style="margin-top:1rem">
+              <div style="font-size:0.75rem;color:var(--clr-muted);margin-bottom:0.4rem;font-family:var(--font-mono)">
+                BiLSTM <span style="color:var(--clr-accent)">(main model)</span>
+              </div>
+              <canvas id="chart-loss-BiLSTM" class="chart-canvas" style="max-height:240px"
+                      aria-label="BiLSTM loss curves"></canvas>
+              <div class="chart-placeholder" id="loss-BiLSTM-placeholder" style="min-height:120px">—</div>
+            </div>
           </div>
         </div>
 
@@ -789,15 +847,248 @@
 
       <!-- ======================================================
            SECTION 6 — FIGURES (PAPER REPLICATION)
+           Fig. 1–11: tái hiện từ Li et al. (2026)
+           Extended: walk-forward stability, ROC overlay, v.v.
            ====================================================== -->
       <section class="content-section" id="section-figures" data-section="figures">
 
         <div class="section-header">
           <h2 class="section-title">Figures — Paper Replication</h2>
-          <p class="section-desc">Replica các hình ảnh từ Li et al. (2026): Fig. 11 (MSE comparison), wavelet decomposition, correlation matrix, etc.</p>
+          <p class="section-desc">
+            Tái hiện toàn bộ Fig. 1–11 từ Li et al. (2026) cùng các extended figures.
+            Tất cả được render server-side bằng matplotlib (dark theme).
+          </p>
         </div>
 
-        <!-- Fig 11 — MSE comparison bar chart -->
+
+        <!-- ── STATIC DIAGRAMS: Fig. 1 & Fig. 4 ─────────────────────────── -->
+        <!-- Không cần data params — chỉ click Load -->
+        <div class="two-col-grid">
+
+          <!-- Fig. 1 — Pipeline Framework -->
+          <div class="card">
+            <div class="card-header">
+              <span class="card-title">Fig. 1 — Pipeline Framework</span>
+              <button class="btn btn-sm btn-outline" id="btn-fig1">Load</button>
+            </div>
+            <div class="card-body">
+              <div class="img-container" id="fig1-container">
+                <div class="img-placeholder">Click "Load" to render Fig. 1</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Fig. 4 — Feature Scaling Flowchart -->
+          <div class="card">
+            <div class="card-header">
+              <span class="card-title">Fig. 4 — Feature Scaling Flowchart</span>
+              <button class="btn btn-sm btn-outline" id="btn-fig4">Load</button>
+            </div>
+            <div class="card-body">
+              <div class="img-container" id="fig4-container">
+                <div class="img-placeholder">Click "Load" to render Fig. 4</div>
+              </div>
+            </div>
+          </div>
+
+        </div><!-- /two-col-grid Fig.1+4 -->
+
+
+        <!-- ── STATIC DIAGRAMS: Fig. 6 & Fig. 9 ─────────────────────────── -->
+        <div class="two-col-grid">
+
+          <!-- Fig. 6 — db4 Wavelet & Scaling Functions -->
+          <div class="card">
+            <div class="card-header">
+              <span class="card-title">Fig. 6 — db4 Wavelet &amp; Scaling Functions</span>
+              <button class="btn btn-sm btn-outline" id="btn-fig6">Load</button>
+            </div>
+            <div class="card-body">
+              <div class="img-container" id="fig6-container">
+                <div class="img-placeholder">Click "Load" to render Fig. 6</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Fig. 9 — Level-1 SWT Decomposition Diagram -->
+          <div class="card">
+            <div class="card-header">
+              <span class="card-title">Fig. 9 — Level-1 SWT Decomposition</span>
+              <button class="btn btn-sm btn-outline" id="btn-fig9">Load</button>
+            </div>
+            <div class="card-body">
+              <div class="img-container" id="fig9-container">
+                <div class="img-placeholder">Click "Load" to render Fig. 9</div>
+              </div>
+            </div>
+          </div>
+
+        </div><!-- /two-col-grid Fig.6+9 -->
+
+
+        <!-- ── DATA FIGURES: Fig. 2 & Fig. 3 ────────────────────────────── -->
+        <!-- Cần ticker + currency -->
+        <div class="two-col-grid">
+
+          <!-- Fig. 2 — Deviation Scatter Plot -->
+          <div class="card">
+            <div class="card-header">
+              <span class="card-title">Fig. 2 — Deviation Scatter</span>
+              <div class="header-controls-inline">
+                <select class="select select-sm" id="fig2-ticker">
+                  <option value="VCB">VCB</option>
+                  <option value="VIC">VIC</option>
+                </select>
+                <select class="select select-sm" id="fig2-currency">
+                  <option value="VND">VND</option>
+                  <option value="USD">USD</option>
+                </select>
+                <button class="btn btn-sm btn-outline" id="btn-fig2">Load</button>
+              </div>
+            </div>
+            <div class="card-body">
+              <div class="img-container" id="fig2-container">
+                <div class="img-placeholder">Click "Load" to render Fig. 2</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Fig. 3 — Feature Distribution Histograms (wavelet pkl) -->
+          <div class="card">
+            <div class="card-header">
+              <span class="card-title">Fig. 3 — Feature Distributions</span>
+              <div class="header-controls-inline">
+                <select class="select select-sm" id="fig3-ticker">
+                  <option value="VCB">VCB</option>
+                  <option value="VIC">VIC</option>
+                </select>
+                <select class="select select-sm" id="fig3-currency">
+                  <option value="VND">VND</option>
+                  <option value="USD">USD</option>
+                </select>
+                <button class="btn btn-sm btn-outline" id="btn-fig3">Load</button>
+              </div>
+            </div>
+            <div class="card-body">
+              <div class="img-container" id="fig3-container">
+                <div class="img-placeholder">Click "Load" to render Fig. 3</div>
+              </div>
+            </div>
+          </div>
+
+        </div><!-- /two-col-grid Fig.2+3 -->
+
+
+        <!-- ── DATA FIGURES: Fig. 5 & Fig. 10 ───────────────────────────── -->
+        <div class="two-col-grid">
+
+          <!-- Fig. 5 — Wavelet Decomposition Time Series -->
+          <div class="card">
+            <div class="card-header">
+              <span class="card-title">Fig. 5 — Wavelet Decomposition</span>
+              <div class="header-controls-inline">
+                <select class="select select-sm" id="fig5-ticker">
+                  <option value="VCB">VCB</option>
+                  <option value="VIC">VIC</option>
+                </select>
+                <select class="select select-sm" id="fig5-currency">
+                  <option value="VND">VND</option>
+                  <option value="USD">USD</option>
+                </select>
+                <button class="btn btn-sm btn-outline" id="btn-fig5">Load</button>
+              </div>
+            </div>
+            <div class="card-body">
+              <div class="img-container" id="fig5-container">
+                <div class="img-placeholder">Click "Load" to render Fig. 5</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Fig. 10 — Correlation Matrix Heatmap (ticker + currency + wavelet) -->
+          <div class="card">
+            <div class="card-header">
+              <span class="card-title">Fig. 10 — Correlation Matrix</span>
+              <div class="header-controls-inline">
+                <select class="select select-sm" id="fig10-ticker">
+                  <option value="VCB">VCB</option>
+                  <option value="VIC">VIC</option>
+                </select>
+                <select class="select select-sm" id="fig10-currency">
+                  <option value="VND">VND</option>
+                  <option value="USD">USD</option>
+                </select>
+                <select class="select select-sm" id="fig10-wavelet">
+                  <option value="true">Wavelet</option>
+                  <option value="false">No-Wave</option>
+                </select>
+                <button class="btn btn-sm btn-outline" id="btn-fig10">Load</button>
+              </div>
+            </div>
+            <div class="card-body">
+              <div class="img-container" id="fig10-container">
+                <div class="img-placeholder">Click "Load" to render Fig. 10</div>
+              </div>
+            </div>
+          </div>
+
+        </div><!-- /two-col-grid Fig.5+10 -->
+
+
+        <!-- ── WAVELET COEFFICIENTS: Fig. 7 & Fig. 8 ─────────────────────── -->
+        <!-- Fig. 7 = VIC analog (Tesla), Fig. 8 = VCB analog (Apple) -->
+        <div class="two-col-grid">
+
+          <!-- Fig. 7 — Approximation Coefficients (A1), default VIC -->
+          <div class="card">
+            <div class="card-header">
+              <span class="card-title">Fig. 7 — Approx Coefficients (A1)</span>
+              <div class="header-controls-inline">
+                <select class="select select-sm" id="fig7-ticker">
+                  <option value="VIC">VIC</option><!-- default VIC = Tesla analog -->
+                  <option value="VCB">VCB</option>
+                </select>
+                <select class="select select-sm" id="fig7-currency">
+                  <option value="VND">VND</option>
+                  <option value="USD">USD</option>
+                </select>
+                <button class="btn btn-sm btn-outline" id="btn-fig7">Load</button>
+              </div>
+            </div>
+            <div class="card-body">
+              <div class="img-container" id="fig7-container">
+                <div class="img-placeholder">Click "Load" to render Fig. 7</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Fig. 8 — Detail Coefficients (D1), default VCB -->
+          <div class="card">
+            <div class="card-header">
+              <span class="card-title">Fig. 8 — Detail Coefficients (D1)</span>
+              <div class="header-controls-inline">
+                <select class="select select-sm" id="fig8-ticker">
+                  <option value="VCB">VCB</option><!-- default VCB = Apple analog -->
+                  <option value="VIC">VIC</option>
+                </select>
+                <select class="select select-sm" id="fig8-currency">
+                  <option value="VND">VND</option>
+                  <option value="USD">USD</option>
+                </select>
+                <button class="btn btn-sm btn-outline" id="btn-fig8">Load</button>
+              </div>
+            </div>
+            <div class="card-body">
+              <div class="img-container" id="fig8-container">
+                <div class="img-placeholder">Click "Load" to render Fig. 8</div>
+              </div>
+            </div>
+          </div>
+
+        </div><!-- /two-col-grid Fig.7+8 -->
+
+
+        <!-- ── Fig. 11 — MSE Comparison Bar Chart ────────────────────────── -->
         <div class="card">
           <div class="card-header">
             <span class="card-title">Fig. 11 — MSE Comparison (All Models)</span>
@@ -820,7 +1111,8 @@
           </div>
         </div>
 
-        <!-- Two-column: VND vs USD comparison -->
+
+        <!-- ── VND vs USD Comparison Table ───────────────────────────────── -->
         <div class="card">
           <div class="card-header">
             <span class="card-title">VND vs USD Comparison</span>
@@ -839,10 +1131,12 @@
           </div>
         </div>
 
-        <!-- Walk-Forward stability chart -->
+
+        <!-- ── Walk-Forward Stability ─────────────────────────────────────── -->
+        <!-- Response: base64 image từ /api/viz/walkforward → dùng img-container -->
         <div class="card">
           <div class="card-header">
-            <span class="card-title">Walk-Forward Stability — Metrics per Fold</span>
+            <span class="card-title">Walk-Forward Stability — Metric per Fold</span>
             <div class="header-controls-inline">
               <select class="select select-sm" id="wf-ticker">
                 <option value="VCB">VCB</option>
@@ -852,12 +1146,38 @@
                 <option value="VND">VND</option>
                 <option value="USD">USD</option>
               </select>
+              <!-- Task: chọn regression hoặc classification -->
+              <select class="select select-sm" id="wf-task">
+                <option value="regression">Regression</option>
+                <option value="classification">Classification</option>
+              </select>
+              <!-- Metric: phải khớp với task đã chọn -->
+              <select class="select select-sm" id="wf-metric">
+                <optgroup label="Regression">
+                  <option value="MSE" selected>MSE</option>
+                  <option value="MAE">MAE</option>
+                  <option value="MAPE">MAPE</option>
+                  <option value="R2">R²</option>
+                </optgroup>
+                <optgroup label="Classification">
+                  <option value="Accuracy">Accuracy</option>
+                  <option value="F1">F1</option>
+                  <option value="AUC_ROC">AUC-ROC</option>
+                </optgroup>
+              </select>
+              <!-- Wavelet condition -->
+              <select class="select select-sm" id="wf-wavelet">
+                <option value="true">Wavelet</option>
+                <option value="false">No-Wave</option>
+              </select>
               <button class="btn btn-sm btn-outline" id="btn-load-wf">Load</button>
             </div>
           </div>
           <div class="card-body">
-            <canvas id="chart-wf-stability" class="chart-canvas" aria-label="Walk-forward stability chart"></canvas>
-            <div class="chart-placeholder" id="wf-placeholder">Click "Load" to see fold-by-fold metrics</div>
+            <!-- img-container: nhận base64 image từ /api/viz/walkforward -->
+            <div class="img-container" id="wf-img-container">
+              <div class="img-placeholder">Select params and click "Load"</div>
+            </div>
           </div>
         </div>
 

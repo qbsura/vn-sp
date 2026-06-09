@@ -315,32 +315,201 @@ async function getTradingResults(ticker, currency = 'VND', foldIdx = 3) {
 
 
 // =============================================================================
-// VIZ API  — /api/viz/*   (all return {image: "data:image/png;base64,..."})
+// VIZ API  — /api/viz/*
+// Tất cả endpoints trả về: { image: "data:image/png;base64,..." }
+// Dùng cho Section Figures (matplotlib server-side rendering).
 // =============================================================================
 
-/** GET /api/viz/fig11 — MSE bar chart */
-async function getVizFig11(ticker, currency = 'VND') {
+// ── Paper figures (Fig. 1–11) ────────────────────────────────────────────────
+
+/** GET /api/viz/fig1 — Pipeline framework diagram (static, no params) */
+async function getVizFig1() {
+  return _fetch(`${API_BASE}/viz/fig1`);
+}
+
+/**
+ * GET /api/viz/fig2 — Deviation scatter plot
+ * @param {string} ticker   'VCB' | 'VIC'
+ * @param {string} currency 'VND' | 'USD'
+ */
+async function getVizFig2(ticker = 'VCB', currency = 'VND') {
+  return _fetch(`${API_BASE}/viz/fig2${_qs({ ticker, currency })}`);
+}
+
+/**
+ * GET /api/viz/fig3 — Wavelet feature distribution histograms
+ * @param {string} ticker
+ * @param {string} currency
+ */
+async function getVizFig3(ticker = 'VCB', currency = 'VND') {
+  return _fetch(`${API_BASE}/viz/fig3${_qs({ ticker, currency })}`);
+}
+
+/** GET /api/viz/fig4 — Feature scaling flowchart (static, no params) */
+async function getVizFig4() {
+  return _fetch(`${API_BASE}/viz/fig4`);
+}
+
+/**
+ * GET /api/viz/fig5 — Wavelet decomposition time series
+ * @param {string} ticker
+ * @param {string} currency
+ */
+async function getVizFig5(ticker = 'VCB', currency = 'VND') {
+  return _fetch(`${API_BASE}/viz/fig5${_qs({ ticker, currency })}`);
+}
+
+/** GET /api/viz/fig6 — db4 wavelet & scaling functions (static, no params) */
+async function getVizFig6() {
+  return _fetch(`${API_BASE}/viz/fig6`);
+}
+
+/**
+ * GET /api/viz/fig7 — Approximation coefficients (A1) — VIC analog
+ * @param {string} ticker   default 'VIC' (Tesla analog trong bài báo)
+ * @param {string} currency
+ */
+async function getVizFig7(ticker = 'VIC', currency = 'VND') {
+  return _fetch(`${API_BASE}/viz/fig7${_qs({ ticker, currency })}`);
+}
+
+/**
+ * GET /api/viz/fig8 — Detail coefficients (D1) — VCB analog
+ * @param {string} ticker   default 'VCB' (Apple analog trong bài báo)
+ * @param {string} currency
+ */
+async function getVizFig8(ticker = 'VCB', currency = 'VND') {
+  return _fetch(`${API_BASE}/viz/fig8${_qs({ ticker, currency })}`);
+}
+
+/** GET /api/viz/fig9 — Level-1 SWT decomposition diagram (static, no params) */
+async function getVizFig9() {
+  return _fetch(`${API_BASE}/viz/fig9`);
+}
+
+/**
+ * GET /api/viz/fig10 — Feature correlation matrix heatmap
+ * @param {string}  ticker
+ * @param {string}  currency
+ * @param {boolean} wavelet  true = wavelet features, false = raw features
+ */
+async function getVizFig10(ticker = 'VCB', currency = 'VND', wavelet = true) {
+  return _fetch(`${API_BASE}/viz/fig10${_qs({ ticker, currency, wavelet })}`);
+}
+
+/**
+ * GET /api/viz/fig11 — MSE comparison bar chart (replica Fig. 11 bài báo)
+ * @param {string} ticker
+ * @param {string} currency
+ */
+async function getVizFig11(ticker = 'VCB', currency = 'VND') {
   return _fetch(`${API_BASE}/viz/fig11${_qs({ ticker, currency })}`);
 }
 
-/** GET /api/viz/predicted-vs-actual */
+
+// ── Extended figures ─────────────────────────────────────────────────────────
+
+/**
+ * GET /api/viz/predicted-vs-actual — Predicted vs Actual price chart
+ * @param {string} expId     Experiment ID (regression task)
+ * @param {number} [foldIdx] 1 | 2 | 3
+ */
 async function getVizPredVsActual(expId, foldIdx = 3) {
   return _fetch(`${API_BASE}/viz/predicted-vs-actual${_qs({ exp_id: expId, fold_idx: foldIdx })}`);
 }
 
-/** GET /api/viz/loss-curves */
+/**
+ * GET /api/viz/loss-curves — Train/val loss curves per epoch (matplotlib)
+ * @param {string} expId
+ * @param {number} [foldIdx]
+ */
 async function getVizLossCurves(expId, foldIdx = 1) {
   return _fetch(`${API_BASE}/viz/loss-curves${_qs({ exp_id: expId, fold_idx: foldIdx })}`);
 }
 
-/** GET /api/viz/confusion-matrix */
+/**
+ * GET /api/viz/confusion-matrix — Confusion matrix heatmap (matplotlib/seaborn)
+ * @param {string} expId     Experiment ID (classification task)
+ * @param {number} [foldIdx]
+ */
 async function getVizConfusionMatrix(expId, foldIdx = 3) {
   return _fetch(`${API_BASE}/viz/confusion-matrix${_qs({ exp_id: expId, fold_idx: foldIdx })}`);
 }
 
-/** GET /api/viz/trading-returns */
-async function getVizTradingReturns(ticker, currency = 'VND', foldIdx = 3) {
+/**
+ * GET /api/viz/trading-returns — Cumulative return chart (5 models vs Buy & Hold)
+ * @param {string} ticker
+ * @param {string} currency
+ * @param {number} [foldIdx]
+ */
+async function getVizTradingReturns(ticker = 'VCB', currency = 'VND', foldIdx = 3) {
   return _fetch(`${API_BASE}/viz/trading-returns${_qs({ ticker, currency, fold_idx: foldIdx })}`);
+}
+
+/**
+ * GET /api/viz/walkforward — Walk-forward stability chart (metric per fold, 5 models)
+ * @param {string}  ticker
+ * @param {string}  currency
+ * @param {string}  [task]    'regression' | 'classification'
+ * @param {string}  [metric]  'MSE' | 'MAE' | 'MAPE' | 'R2' | 'Accuracy' | 'F1' | 'AUC_ROC'
+ * @param {boolean} [wavelet]
+ */
+async function getVizWalkforward(
+  ticker   = 'VCB',
+  currency = 'VND',
+  task     = 'regression',
+  metric   = 'MSE',
+  wavelet  = true,
+) {
+  return _fetch(`${API_BASE}/viz/walkforward${_qs({ ticker, currency, task, metric, wavelet })}`);
+}
+
+/**
+ * GET /api/viz/roc-curves — Multi-model ROC curves overlay (5 models)
+ * @param {string}  ticker
+ * @param {string}  currency
+ * @param {number}  [foldIdx]
+ * @param {boolean} [wavelet]
+ */
+async function getVizRocCurves(ticker = 'VCB', currency = 'VND', foldIdx = 3, wavelet = true) {
+  return _fetch(`${API_BASE}/viz/roc-curves${_qs({ ticker, currency, fold_idx: foldIdx, wavelet })}`);
+}
+
+/**
+ * GET /api/viz/fig-classification-table — Classification metrics table (Accuracy/F1/AUC per model per fold)
+ * @param {string}  ticker
+ * @param {string}  currency
+ * @param {boolean} [wavelet]
+ */
+async function getVizFigClassificationTable(ticker = 'VCB', currency = 'VND', wavelet = true) {
+  return _fetch(`${API_BASE}/viz/fig-classification-table${_qs({ ticker, currency, wavelet })}`);
+}
+
+/**
+ * GET /api/viz/fig-vnd-vs-usd — VND vs USD side-by-side metric comparison table
+ * @param {string} [modelName]  'DNN' | 'RNN' | 'GRU' | 'LSTM' | 'BiLSTM'
+ */
+async function getVizFigVndVsUsd(modelName = 'BiLSTM') {
+  return _fetch(`${API_BASE}/viz/fig-vnd-vs-usd${_qs({ model_name: modelName })}`);
+}
+
+/**
+ * GET /api/viz/fig-walkforward — Walk-forward stability chart cho một experiment cụ thể
+ * @param {string} expId  Experiment ID đầy đủ (e.g. 'VCB_VND_wavelet_BiLSTM_regression')
+ */
+async function getVizFigWalkforward(expId) {
+  return _fetch(`${API_BASE}/viz/fig-walkforward${_qs({ exp_id: expId })}`);
+}
+
+/**
+ * GET /api/viz/fig-cumulative-return — Cumulative return chart với Sharpe/MaxDD annotations
+ * @param {string}  ticker
+ * @param {string}  currency
+ * @param {number}  [foldIdx]
+ * @param {boolean} [wavelet]
+ */
+async function getVizFigCumulativeReturn(ticker = 'VCB', currency = 'VND', foldIdx = 3, wavelet = true) {
+  return _fetch(`${API_BASE}/viz/fig-cumulative-return${_qs({ ticker, currency, fold_idx: foldIdx, wavelet })}`);
 }
 
 
@@ -424,12 +593,29 @@ window.VNSP.api = {
   getConfusionMatrix,
   getROCCurve,
   getTradingResults,
-  // Viz (prerendered images)
+  // Viz — paper figures (Fig. 1–11)
+  getVizFig1,
+  getVizFig2,
+  getVizFig3,
+  getVizFig4,
+  getVizFig5,
+  getVizFig6,
+  getVizFig7,
+  getVizFig8,
+  getVizFig9,
+  getVizFig10,
   getVizFig11,
+  // Viz — extended figures
   getVizPredVsActual,
   getVizLossCurves,
   getVizConfusionMatrix,
   getVizTradingReturns,
+  getVizWalkforward,
+  getVizRocCurves,
+  getVizFigClassificationTable,
+  getVizFigVndVsUsd,
+  getVizFigWalkforward,
+  getVizFigCumulativeReturn,
   // Polling
   pollJob,
 };

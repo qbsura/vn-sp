@@ -240,7 +240,7 @@ async function loadRawData() {
 
     renderTableBody('raw-data-tbody', data.data,
       apiKeys.map((k, i) => ({
-        key: k.toLowerCase(),
+        key: k,   // API trả PascalCase: 'Date','Open','High','Low','Close','Volume'
         label: cols[i],
         fmt: (v) => {
           if (k === 'Date') return v;
@@ -507,48 +507,79 @@ async function loadRegression() {
       </tr>`
     ).join('');
 
-    // Render MSE comparison chart (Fig. 11 equivalent)
-    charts.renderMSEComparison('chart-pred-actual', {   // reuse canvas for now
+    // Render MSE comparison chart vào canvas riêng (không dùng chart-pred-actual)
+    charts.renderMSEComparison('chart-mse-comparison', {
       models, before_wavelet: beforeWave, after_wavelet: afterWave, metric: 'MSE',
-      placeholderId: 'pred-chart-placeholder',
+      placeholderId: 'mse-comparison-placeholder',
     });
 
     ui.showToast('success', 'Regression results loaded', `${models.length} models`);
   } catch (_) { /* toast */ } finally { ui.hideSpinner(); }
 }
 
+// Predicted vs Actual — tải cả 5 models cùng lúc, mỗi model 1 màu riêng
 async function loadPredChart() {
   const ticker     = sel('reg-ticker');
   const currency   = sel('reg-currency');
-  const model      = sel('pred-model');
   const useWavelet = sel('pred-wavelet') === 'true';
   const fold       = parseInt(sel('reg-fold'), 10) || 3;
-  const expId      = buildExpId(ticker, currency, useWavelet, model, 'regression');
-  ui.showSpinner('Loading predictions…');
 
+  ui.showSpinner('Loading predictions (5 models)…');
   try {
-    const data = await api.getPredictions(expId, fold);
+    // Tải song song 5 models
+    const results = await Promise.allSettled(
+      MODELS.map(m => api.getPredictions(
+        buildExpId(ticker, currency, useWavelet, m, 'regression'), fold
+      ))
+    );
+
+    // Lấy y_true từ model đầu tiên thành công (giống nhau cho mọi model)
+    const first = results.find(r => r.status === 'fulfilled');
+    if (!first) throw new Error('Không tải được predictions cho bất kỳ model nào.');
+
+    const actual = first.value.y_true;
+    const dates  = first.value.dates;
+
+    // Build multi-model format cho renderPredictedVsActual
+    const modelDatasets = MODELS.map((m, i) => ({
+      name : m,
+      preds: results[i].status === 'fulfilled' ? results[i].value.y_pred : null,
+    })).filter(d => d.preds !== null);
+
     charts.renderPredictedVsActual('chart-pred-actual', {
-      ...data,
-      currency,
-      ticker,
+      actual, dates, models: modelDatasets, ticker, currency,
       placeholderId: 'pred-chart-placeholder',
     });
+    // Hiện hint zoom sau khi chart đã load
+    const hint = document.getElementById('pred-zoom-hint');
+    if (hint) hint.style.display = 'block';
   } catch (_) { /* toast */ } finally { ui.hideSpinner(); }
 }
 
+// Loss Curves — tải cả 5 models cùng lúc, hiển thị trong 5 panels riêng
 async function loadLossCurves() {
   const ticker     = sel('reg-ticker');
   const currency   = sel('reg-currency');
-  const model      = sel('pred-model');
   const useWavelet = sel('pred-wavelet') === 'true';
   const fold       = parseInt(sel('reg-fold'), 10) || 1;
-  const expId      = buildExpId(ticker, currency, useWavelet, model, 'regression');
-  ui.showSpinner('Loading loss curves…');
 
+  ui.showSpinner('Loading loss curves (5 models)…');
   try {
-    const data = await api.getLossCurves(expId, fold);
-    charts.renderLossCurves('chart-loss-curves', { ...data, placeholderId: 'loss-placeholder' });
+    const results = await Promise.allSettled(
+      MODELS.map(m => api.getLossCurves(
+        buildExpId(ticker, currency, useWavelet, m, 'regression'), fold
+      ))
+    );
+
+    MODELS.forEach((m, i) => {
+      if (results[i].status === 'fulfilled') {
+        charts.renderLossCurves(`chart-loss-${m}`, {
+          ...results[i].value,
+          modelLabel      : m,
+          placeholderId   : `loss-${m}-placeholder`,
+        });
+      }
+    });
   } catch (_) { /* toast */ } finally { ui.hideSpinner(); }
 }
 
@@ -643,13 +674,13 @@ async function loadTrading() {
 
     // Render table
     renderTableBody('trading-tbody', rows, [
-      { key: 'model_name',          label: 'Model',         fmt: v => `<strong>${v}</strong>` },
-      { key: 'use_wavelet',         label: 'Wavelet',       fmt: v => v ? '✓ Wave' : 'No-Wave' },
-      { key: 'Cumulative_Return',   label: 'Cum. Return',   fmt: v => fmtPct(v) },
-      { key: 'BuyHold_Return',      label: 'Buy & Hold',    fmt: v => fmtPct(v) },
-      { key: 'Sharpe_Ratio',        label: 'Sharpe',        fmt: v => fmt(v, 3) },
-      { key: 'Max_Drawdown',        label: 'Max DD',        fmt: v => fmtPct(v) },
-      { key: 'Win_Rate',            label: 'Win Rate',      fmt: v => fmtPct(v) },
+      { key: 'model',             label: 'Model',       fmt: v => `<strong>${v ?? '—'}</strong>` },
+      { key: 'use_wavelet',       label: 'Wavelet',     fmt: v => v ? '✓ Wave' : 'No-Wave' },
+      { key: 'Cumulative_Return', label: 'Cum. Return', fmt: v => fmtPct(v) },
+      { key: 'BuyHold_Return',    label: 'Buy & Hold',  fmt: v => fmtPct(v) },
+      { key: 'Sharpe_Ratio',      label: 'Sharpe',      fmt: v => fmt(v, 3) },
+      { key: 'Max_Drawdown',      label: 'Max DD',      fmt: v => fmtPct(v) },
+      { key: 'Win_Rate',          label: 'Win Rate',    fmt: v => fmtPct(v) },
     ]);
 
     attachTableSort('trading-table');
@@ -661,6 +692,107 @@ async function loadTrading() {
 // =============================================================================
 // SECTION: FIGURES
 // =============================================================================
+
+// ── Helper: load a static figure (no data params) ────────────────────────────
+
+/**
+ * Load một static figure không cần params.
+ * @param {Function} apiFn        api function to call (e.g. api.getVizFig1)
+ * @param {string}   containerId  id của img-container div
+ * @param {string}   label        mô tả ngắn cho spinner + alt text
+ */
+async function _loadStaticFig(apiFn, containerId, label) {
+  ui.showSpinner(`Generating ${label}…`);
+  try {
+    const res = await apiFn();
+    renderImage(containerId, res.image, label);
+  } catch (_) { /* toast shown by api._fetch */ } finally { ui.hideSpinner(); }
+}
+
+// ── Static figures (fig1, fig4, fig6, fig9) ───────────────────────────────────
+
+async function loadFig1() {
+  await _loadStaticFig(api.getVizFig1, 'fig1-container', 'Fig. 1 – Pipeline Framework');
+}
+
+async function loadFig4() {
+  await _loadStaticFig(api.getVizFig4, 'fig4-container', 'Fig. 4 – Scaling Flowchart');
+}
+
+async function loadFig6() {
+  await _loadStaticFig(api.getVizFig6, 'fig6-container', 'Fig. 6 – db4 Wavelet Functions');
+}
+
+async function loadFig9() {
+  await _loadStaticFig(api.getVizFig9, 'fig9-container', 'Fig. 9 – Level-1 Decomposition');
+}
+
+// ── Data-dependent figures (ticker + currency) ────────────────────────────────
+
+async function loadFig2() {
+  const ticker   = sel('fig2-ticker');
+  const currency = sel('fig2-currency');
+  ui.showSpinner('Generating Fig. 2…');
+  try {
+    const res = await api.getVizFig2(ticker, currency);
+    renderImage('fig2-container', res.image, 'Fig. 2 – Deviation Scatter');
+  } catch (_) {} finally { ui.hideSpinner(); }
+}
+
+async function loadFig3() {
+  const ticker   = sel('fig3-ticker');
+  const currency = sel('fig3-currency');
+  ui.showSpinner('Generating Fig. 3…');
+  try {
+    const res = await api.getVizFig3(ticker, currency);
+    renderImage('fig3-container', res.image, 'Fig. 3 – Feature Distributions');
+  } catch (_) {} finally { ui.hideSpinner(); }
+}
+
+async function loadFig5() {
+  const ticker   = sel('fig5-ticker');
+  const currency = sel('fig5-currency');
+  ui.showSpinner('Generating Fig. 5…');
+  try {
+    const res = await api.getVizFig5(ticker, currency);
+    renderImage('fig5-container', res.image, 'Fig. 5 – Wavelet Decomposition');
+  } catch (_) {} finally { ui.hideSpinner(); }
+}
+
+async function loadFig7() {
+  const ticker   = sel('fig7-ticker');
+  const currency = sel('fig7-currency');
+  ui.showSpinner('Generating Fig. 7…');
+  try {
+    const res = await api.getVizFig7(ticker, currency);
+    renderImage('fig7-container', res.image, 'Fig. 7 – Approx Coefficients (A1)');
+  } catch (_) {} finally { ui.hideSpinner(); }
+}
+
+async function loadFig8() {
+  const ticker   = sel('fig8-ticker');
+  const currency = sel('fig8-currency');
+  ui.showSpinner('Generating Fig. 8…');
+  try {
+    const res = await api.getVizFig8(ticker, currency);
+    renderImage('fig8-container', res.image, 'Fig. 8 – Detail Coefficients (D1)');
+  } catch (_) {} finally { ui.hideSpinner(); }
+}
+
+// ── Fig. 10 — Correlation Matrix (ticker + currency + wavelet) ────────────────
+
+async function loadFig10() {
+  const ticker   = sel('fig10-ticker');
+  const currency = sel('fig10-currency');
+  const wavelet  = sel('fig10-wavelet') === 'true';
+  ui.showSpinner('Generating Fig. 10…');
+  try {
+    const res = await api.getVizFig10(ticker, currency, wavelet);
+    renderImage('fig10-container', res.image, 'Fig. 10 – Correlation Matrix');
+  } catch (_) {} finally { ui.hideSpinner(); }
+}
+
+// ── Fig. 11 — MSE Comparison Bar Chart ────────────────────────────────────────
 
 async function loadFig11() {
   const ticker   = sel('fig11-ticker');
@@ -690,6 +822,23 @@ async function loadVndVsUsd() {
       `<tr>${columns.map(c => `<td>${row[c] != null ? fmt(row[c], 4) : '—'}</td>`).join('')}</tr>`
     ).join('');
   } catch (_) { /* toast */ } finally { ui.hideSpinner(); }
+}
+
+// ── Walk-Forward Stability ─────────────────────────────────────────────────────
+// Gọi /api/viz/walkforward → trả về base64 image, render vào img-container.
+// Params: ticker, currency, task (regression|classification), metric, wavelet.
+
+async function loadWf() {
+  const ticker   = sel('wf-ticker');
+  const currency = sel('wf-currency');
+  const task     = sel('wf-task');
+  const metric   = sel('wf-metric');
+  const wavelet  = sel('wf-wavelet') === 'true';
+  ui.showSpinner('Generating Walk-Forward chart…');
+  try {
+    const res = await api.getVizWalkforward(ticker, currency, task, metric, wavelet);
+    renderImage('wf-img-container', res.image, `Walk-Forward – ${metric} per Fold`);
+  } catch (_) { /* toast shown by api._fetch */ } finally { ui.hideSpinner(); }
 }
 
 
@@ -733,9 +882,21 @@ function attachEventListeners() {
   // Trading section
   on('btn-load-trading', loadTrading);
 
-  // Figures section
+  // Figures section — fig1–fig10 (static + data-dependent)
+  on('btn-fig1',  loadFig1);
+  on('btn-fig2',  loadFig2);
+  on('btn-fig3',  loadFig3);
+  on('btn-fig4',  loadFig4);
+  on('btn-fig5',  loadFig5);
+  on('btn-fig6',  loadFig6);
+  on('btn-fig7',  loadFig7);
+  on('btn-fig8',  loadFig8);
+  on('btn-fig9',  loadFig9);
+  on('btn-fig10', loadFig10);
+  // Figures section — fig11, vnd-usd, walk-forward
   on('btn-load-fig11',   loadFig11);
   on('btn-load-vnd-usd', loadVndVsUsd);
+  on('btn-load-wf',      loadWf);
 
   // Enable sort on static tables
   attachTableSort('raw-data-table');

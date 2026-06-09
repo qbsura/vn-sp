@@ -326,8 +326,9 @@ def run_trading_simulation_all_models(
                 ))
             continue
 
-        with open(pkl_path, "rb") as f:
-            df_full = pickle.load(f)
+        with open(pkl_path, 'rb') as f:
+            data = pickle.load(f)
+        df_full = data["df"]
 
         # Filter về test period
         df_test = df_full[

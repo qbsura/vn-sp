@@ -73,6 +73,113 @@ function _destroyChart(canvasId) {
 }
 
 // =============================================================================
+// ZOOM & PAN — custom wheel-zoom + drag-pan (không cần plugin ngoài)
+// =============================================================================
+
+/**
+ * Attach wheel-zoom + drag-pan + double-click-reset cho một Chart.js canvas.
+ *
+ * Hoạt động với category x-axis (string labels như ngày tháng).
+ *   - Mouse wheel UP    : zoom in  (thu hẹp vùng hiển thị, căn giữa con trỏ)
+ *   - Mouse wheel DOWN  : zoom out (mở rộng vùng hiển thị)
+ *   - Click + drag      : pan trái/phải
+ *   - Double-click      : reset về full view
+ *
+ * Gọi sau khi chart đã được tạo và lưu vào _charts[canvasId].
+ *
+ * @param {string} canvasId
+ */
+function _attachZoomPan(canvasId) {
+  const canvas = document.getElementById(canvasId);
+  if (!canvas) return;
+
+  let dragState = null;  // { startX, startMin, startMax } khi đang drag
+
+  // Helper: lấy [minIdx, maxIdx] hiện tại từ chart options
+  function _getRange(chart) {
+    const all    = chart.data.labels;
+    const minLbl = chart.options.scales?.x?.min;
+    const maxLbl = chart.options.scales?.x?.max;
+    const minIdx = minLbl != null ? Math.max(0, all.indexOf(minLbl)) : 0;
+    let   maxIdx = maxLbl != null ? all.indexOf(maxLbl) : all.length - 1;
+    if (maxIdx === -1) maxIdx = all.length - 1;
+    return { all, minIdx, maxIdx };
+  }
+
+  // ── Wheel Zoom ──────────────────────────────────────────────────────────────
+  canvas.addEventListener('wheel', (evt) => {
+    evt.preventDefault();
+    const chart = _charts[canvasId];
+    if (!chart) return;
+
+    const { all, minIdx, maxIdx } = _getRange(chart);
+    if (!all.length) return;
+
+    const range    = maxIdx - minIdx;
+    // Scroll up = zoom in (nhân 0.80), scroll down = zoom out (nhân 1.25)
+    const factor   = evt.deltaY < 0 ? 0.80 : 1.25;
+    const newRange = Math.max(20, Math.min(all.length - 1, Math.round(range * factor)));
+
+    // Pivot tại vị trí con trỏ X trên canvas
+    const rect     = canvas.getBoundingClientRect();
+    const relX     = Math.min(1, Math.max(0, (evt.clientX - rect.left) / rect.width));
+    const pivotIdx = minIdx + relX * range;
+    let   newMin   = Math.round(pivotIdx - relX * newRange);
+    newMin         = Math.max(0, Math.min(all.length - 1 - newRange, newMin));
+    const newMax   = Math.min(all.length - 1, newMin + newRange);
+
+    chart.options.scales.x.min = all[newMin];
+    chart.options.scales.x.max = all[newMax];
+    chart.update('none');
+  }, { passive: false });
+
+  // ── Drag Pan ────────────────────────────────────────────────────────────────
+  canvas.addEventListener('mousedown', (evt) => {
+    const chart = _charts[canvasId];
+    if (!chart) return;
+    const { all, minIdx, maxIdx } = _getRange(chart);
+    dragState = { startX: evt.clientX, startMin: minIdx, startMax: maxIdx };
+    canvas.style.cursor = 'grabbing';
+  });
+
+  canvas.addEventListener('mousemove', (evt) => {
+    if (!dragState) return;
+    const chart = _charts[canvasId];
+    if (!chart) return;
+    const all = chart.data.labels;
+    if (!all?.length) return;
+
+    const rect       = canvas.getBoundingClientRect();
+    const range      = dragState.startMax - dragState.startMin;
+    const pxPerLabel = range > 0 ? rect.width / range : 1;
+    const deltaIdx   = Math.round((dragState.startX - evt.clientX) / pxPerLabel);
+
+    let newMin       = Math.max(0, Math.min(all.length - 1 - range, dragState.startMin + deltaIdx));
+    const newMax     = Math.min(all.length - 1, newMin + range);
+
+    chart.options.scales.x.min = all[newMin];
+    chart.options.scales.x.max = all[newMax];
+    chart.update('none');
+  });
+
+  const _endDrag = () => { dragState = null; canvas.style.cursor = 'grab'; };
+  canvas.addEventListener('mouseup',    _endDrag);
+  canvas.addEventListener('mouseleave', _endDrag);
+
+  // ── Double-click: Reset toàn bộ view ─────────────────────────────────────────
+  canvas.addEventListener('dblclick', () => {
+    const chart = _charts[canvasId];
+    if (!chart) return;
+    delete chart.options.scales.x.min;
+    delete chart.options.scales.x.max;
+    chart.update();
+    canvas.style.cursor = 'grab';
+  });
+
+  canvas.style.cursor = 'grab';
+}
+
+// =============================================================================
 // SHARED HELPERS
 // =============================================================================
 
@@ -274,30 +381,47 @@ const _bestEpochLinePlugin = {
  * @param {string}   [data.ticker]   e.g. "VCB"
  * @param {string}   [data.placeholderId]
  */
+/**
+ * Line chart: Predicted vs Actual price.
+ *
+ * Hỗ trợ 2 formats:
+ *   - Multi-model (mới): data = { actual, models:[{name, preds}], dates, ticker, currency }
+ *   - Single-model (cũ): data = { y_true, y_pred, dates, ticker, currency }   ← backward-compat
+ *
+ * @param {string} canvasId
+ * @param {object} data
+ */
 function renderPredictedVsActual(canvasId, data) {
   _destroyChart(canvasId);
 
-  const { dates, y_true, y_pred, currency = 'VND', ticker = '', placeholderId } = data;
+  const { currency = 'VND', ticker = '', placeholderId, dates } = data;
   const ctx = document.getElementById(canvasId);
   if (!ctx) { console.warn(`renderPredictedVsActual: canvas #${canvasId} not found`); return; }
 
+  // ── Detect format ────────────────────────────────────────────────────────────
+  const isMultiModel = Array.isArray(data.models);
+  const actual       = isMultiModel ? data.actual : data.y_true;
+  const modelsList   = isMultiModel
+    ? data.models
+    : [{ name: 'Predicted', preds: data.y_pred }];
+
   const labels = dates && dates.length
     ? dates
-    : Array.from({ length: y_true.length }, (_, i) => i + 1);
+    : Array.from({ length: actual.length }, (_, i) => i + 1);
 
   const yLabel = currency === 'USD' ? 'Price (USD)' : 'Price (VND)';
+
+  const priceFormat = (v) =>
+    currency === 'VND'
+      ? Number(v).toLocaleString('vi-VN')
+      : Number(v).toFixed(4);
 
   const opts = _baseOptions({
     plugins: {
       legend: { position: 'top' },
       tooltip: {
         callbacks: {
-          label: (ctx) =>
-            ` ${ctx.dataset.label}: ${
-              currency === 'VND'
-                ? Number(ctx.raw).toLocaleString('vi-VN')
-                : Number(ctx.raw).toFixed(4)
-            } ${currency}`,
+          label: (ctx) => ` ${ctx.dataset.label}: ${priceFormat(ctx.raw)} ${currency}`,
         },
       },
     },
@@ -310,38 +434,46 @@ function renderPredictedVsActual(canvasId, data) {
     },
   });
 
+  // ── Build datasets ──────────────────────────────────────────────────────────
+  // Actual line (trắng, đường đầy)
+  const datasets = [
+    {
+      label          : `Actual (${ticker})`,
+      data           : actual,
+      borderColor    : '#ffffff',
+      backgroundColor: 'transparent',
+      borderWidth    : 2,
+      pointRadius    : 0,
+      tension        : 0.1,
+      order          : 99,   // render sau cùng (trên cùng)
+    },
+  ];
+
+  // Prediction lines — mỗi model 1 màu từ MODEL_COLORS, đường đứt
+  modelsList.forEach((m, i) => {
+    datasets.push({
+      label          : isMultiModel ? m.name : 'Predicted',
+      data           : m.preds,
+      borderColor    : _modelColor(m.name),
+      backgroundColor: 'transparent',
+      borderWidth    : 1.5,
+      borderDash     : [4, 3],
+      pointRadius    : 0,
+      tension        : 0.1,
+      order          : i,
+    });
+  });
+
   _charts[canvasId] = new Chart(ctx, {
     type: 'line',
-    data: {
-      labels,
-      datasets: [
-        {
-          label          : `Actual (${ticker})`,
-          data           : y_true,
-          borderColor    : C.blue,
-          backgroundColor: 'transparent',
-          borderWidth    : 1.5,
-          pointRadius    : 0,
-          tension        : 0.1,
-          order          : 1,
-        },
-        {
-          label          : `Predicted (${ticker})`,
-          data           : y_pred,
-          borderColor    : C.accent,
-          backgroundColor: 'transparent',
-          borderWidth    : 1.5,
-          borderDash     : [4, 3],
-          pointRadius    : 0,
-          tension        : 0.1,
-          order          : 0,
-        },
-      ],
-    },
+    data: { labels, datasets },
     options: opts,
   });
 
   _showCanvas(canvasId, placeholderId || 'pred-chart-placeholder');
+
+  // Attach zoom & pan sau khi chart đã render
+  _attachZoomPan(canvasId);
 }
 
 
@@ -762,11 +894,11 @@ function renderCumulativeReturn(canvasId, data) {
 
     const barLabels = rows.map(r => {
       const wave = r.use_wavelet ? 'W' : 'N';
-      return `${r.model_name} (${wave})`;
+      return `${r.model ?? r.model_name ?? '?'} (${wave})`;  // 'model' là field đúng
     });
     const cumReturns = rows.map(r => ((r.Cumulative_Return ?? r.cumulative_return ?? 0) * 100).toFixed(2));
     const buyHoldArr = rows.map(() => ((buyHold) * 100).toFixed(2));
-    const modelNames = rows.map(r => r.model_name);
+    const modelNames = rows.map(r => r.model ?? r.model_name ?? '');
 
     const opts = _baseOptions({
       plugins: { legend: { position: 'top' } },
