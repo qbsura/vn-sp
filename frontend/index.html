@@ -1,0 +1,896 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>VNSP — Vietnam Stock Prediction Dashboard</title>
+
+  <!-- Google Fonts: IBM Plex Sans (UI) + IBM Plex Mono (data/metrics) -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
+
+  <!-- Chart.js CDN — dùng ở Task 8.2 -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.2/dist/chart.umd.min.js" defer></script>
+
+  <link rel="stylesheet" href="/static/css/style.css" />
+</head>
+
+<body>
+
+<!-- ============================================================
+     APP LAYOUT — Sidebar + Main
+     ============================================================ -->
+<div class="app-layout">
+
+  <!-- ── SIDEBAR ──────────────────────────────────────────── -->
+  <aside class="sidebar" id="sidebar">
+
+    <!-- Brand -->
+    <div class="sidebar-brand">
+      <div class="brand-icon">VS</div>
+      <div class="brand-text">
+        <span class="brand-name">VNSP</span>
+        <span class="brand-sub">Stock Prediction</span>
+      </div>
+    </div>
+
+    <!-- Navigation -->
+    <nav class="sidebar-nav" role="navigation" aria-label="Main navigation">
+      <ul>
+        <li>
+          <a href="#" class="nav-item active" data-section="data">
+            <span class="nav-icon">⬡</span>
+            <span class="nav-label">Data Management</span>
+          </a>
+        </li>
+        <li>
+          <a href="#" class="nav-item" data-section="experiments">
+            <span class="nav-icon">⬡</span>
+            <span class="nav-label">Experiments</span>
+          </a>
+        </li>
+        <li>
+          <a href="#" class="nav-item" data-section="regression">
+            <span class="nav-icon">⬡</span>
+            <span class="nav-label">Results — Regression</span>
+          </a>
+        </li>
+        <li>
+          <a href="#" class="nav-item" data-section="classification">
+            <span class="nav-icon">⬡</span>
+            <span class="nav-label">Results — Classification</span>
+          </a>
+        </li>
+        <li>
+          <a href="#" class="nav-item" data-section="trading">
+            <span class="nav-icon">⬡</span>
+            <span class="nav-label">Trading Simulation</span>
+          </a>
+        </li>
+        <li>
+          <a href="#" class="nav-item" data-section="figures">
+            <span class="nav-icon">⬡</span>
+            <span class="nav-label">Figures (Paper)</span>
+          </a>
+        </li>
+      </ul>
+    </nav>
+
+    <!-- API Status Footer -->
+    <div class="sidebar-footer">
+      <div class="api-status" id="api-status">
+        <span class="status-dot" id="status-dot"></span>
+        <span class="status-text" id="status-text">Connecting…</span>
+      </div>
+      <div class="sidebar-version">Li et al. 2026 · HOSE</div>
+    </div>
+
+  </aside><!-- /sidebar -->
+
+  <!-- ── MAIN WRAPPER ─────────────────────────────────────── -->
+  <div class="main-wrapper">
+
+    <!-- Header -->
+    <header class="app-header">
+      <div class="header-left">
+        <h1 class="header-title">VNSP — Vietnam Stock Prediction Dashboard</h1>
+        <p class="header-sub">Replication of Li et al. (2026) · VCB &amp; VIC · HOSE · Walk-Forward Validation (3 folds)</p>
+      </div>
+      <!-- Progress badge — hiện khi có job đang chạy -->
+      <div class="header-right">
+        <div class="job-badge hidden" id="job-badge">
+          <span class="job-spinner"></span>
+          <span id="job-badge-text">Đang chạy…</span>
+        </div>
+      </div>
+    </header>
+
+    <!-- Content area (sections switched by JS) -->
+    <main class="main-content" id="main-content">
+
+      <!-- ======================================================
+           SECTION 1 — DATA MANAGEMENT
+           ====================================================== -->
+      <section class="content-section active" id="section-data" data-section="data">
+
+        <div class="section-header">
+          <h2 class="section-title">Data Management</h2>
+          <p class="section-desc">Kiểm tra data files, xem raw OHLCV, visualise features sau preprocessing.</p>
+        </div>
+
+        <!-- Data Status Cards -->
+        <div class="card">
+          <div class="card-header">
+            <span class="card-title">File Status</span>
+            <button class="btn btn-sm btn-outline" id="btn-refresh-status">↻ Refresh</button>
+          </div>
+          <div class="card-body">
+            <div class="status-grid" id="data-status-grid">
+              <!-- Populated by JS: api.js → /api/data/status -->
+              <div class="status-item loading-placeholder">Loading…</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Controls row -->
+        <div class="controls-row">
+          <div class="control-group">
+            <label class="control-label">Ticker</label>
+            <select class="select" id="data-ticker">
+              <option value="VCB">VCB</option>
+              <option value="VIC">VIC</option>
+            </select>
+          </div>
+          <div class="control-group">
+            <label class="control-label">Currency</label>
+            <select class="select" id="data-currency">
+              <option value="VND">VND</option>
+              <option value="USD">USD</option>
+            </select>
+          </div>
+          <div class="control-group">
+            <label class="control-label">Wavelet</label>
+            <select class="select" id="data-wavelet">
+              <option value="true">With Wavelet</option>
+              <option value="false">No Wavelet</option>
+            </select>
+          </div>
+          <button class="btn btn-primary" id="btn-load-raw">Load Raw Data</button>
+          <button class="btn btn-outline" id="btn-load-features">Load Features</button>
+          <button class="btn btn-outline" id="btn-preprocess">Run Preprocess</button>
+        </div>
+
+        <!-- Two-column layout: raw data + deviation plot -->
+        <div class="two-col-grid">
+
+          <!-- Raw data table -->
+          <div class="card">
+            <div class="card-header">
+              <span class="card-title">Raw OHLCV Data</span>
+              <span class="card-badge" id="raw-data-count">—</span>
+            </div>
+            <div class="card-body no-pad">
+              <div class="table-wrapper">
+                <table class="data-table sortable" id="raw-data-table">
+                  <thead>
+                    <tr>
+                      <th data-col="date" class="sortable-col">Date <span class="sort-icon">↕</span></th>
+                      <th data-col="open" class="sortable-col">Open <span class="sort-icon">↕</span></th>
+                      <th data-col="high" class="sortable-col">High <span class="sort-icon">↕</span></th>
+                      <th data-col="low" class="sortable-col">Low <span class="sort-icon">↕</span></th>
+                      <th data-col="close" class="sortable-col">Close <span class="sort-icon">↕</span></th>
+                      <th data-col="volume" class="sortable-col">Volume <span class="sort-icon">↕</span></th>
+                    </tr>
+                  </thead>
+                  <tbody id="raw-data-tbody">
+                    <tr><td colspan="6" class="table-empty">Select ticker and click "Load Raw Data"</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
+          <!-- Deviation plot -->
+          <div class="card">
+            <div class="card-header">
+              <span class="card-title">Deviation Plot (Fig. 2)</span>
+              <button class="btn btn-sm btn-outline" id="btn-load-deviation">Load Plot</button>
+            </div>
+            <div class="card-body">
+              <div class="img-container" id="deviation-plot-container">
+                <div class="img-placeholder">Click "Load Plot" to render Fig. 2</div>
+              </div>
+            </div>
+          </div>
+
+        </div><!-- /two-col-grid -->
+
+        <!-- Features preview -->
+        <div class="card">
+          <div class="card-header">
+            <span class="card-title">Processed Features</span>
+            <span class="card-badge" id="features-info">—</span>
+          </div>
+          <div class="card-body no-pad">
+            <div class="table-wrapper">
+              <table class="data-table" id="features-table">
+                <thead id="features-thead">
+                  <tr><th>—</th></tr>
+                </thead>
+                <tbody id="features-tbody">
+                  <tr><td class="table-empty">Select ticker/wavelet and click "Load Features"</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+      </section><!-- /section-data -->
+
+
+      <!-- ======================================================
+           SECTION 2 — EXPERIMENTS
+           ====================================================== -->
+      <section class="content-section" id="section-experiments" data-section="experiments">
+
+        <div class="section-header">
+          <h2 class="section-title">Experiment Matrix</h2>
+          <p class="section-desc">240 runs: 2 tickers × 2 currencies × 2 wavelet × 5 models × 2 tasks × 3 folds.</p>
+        </div>
+
+        <!-- Summary pills -->
+        <div class="pill-row" id="matrix-summary">
+          <div class="pill pill-muted">Total <strong id="m-total">240</strong></div>
+          <div class="pill pill-success">Done <strong id="m-done">0</strong></div>
+          <div class="pill pill-warning">Partial <strong id="m-partial">0</strong></div>
+          <div class="pill pill-muted">Pending <strong id="m-pending">0</strong></div>
+          <div class="pill pill-error">Error <strong id="m-error">0</strong></div>
+          <button class="btn btn-sm btn-outline" id="btn-refresh-matrix">↻ Refresh Matrix</button>
+        </div>
+
+        <!-- Task filter for matrix -->
+        <div class="controls-row">
+          <div class="control-group">
+            <label class="control-label">Show Task</label>
+            <select class="select" id="matrix-task-filter">
+              <option value="regression">Regression</option>
+              <option value="classification">Classification</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- Experiment Matrix Grid -->
+        <!-- Structure: 5 rows (models) × 8 cols (VCB_VND_W, VCB_VND_N, VCB_USD_W, VCB_USD_N, VIC_VND_W, VIC_VND_N, VIC_USD_W, VIC_USD_N) -->
+        <div class="card">
+          <div class="card-body">
+            <div class="matrix-outer">
+
+              <!-- Column headers -->
+              <div class="matrix-col-headers">
+                <div class="matrix-row-label-spacer"></div>
+                <!-- VCB group -->
+                <div class="matrix-group-header" style="grid-column: span 4">
+                  <span class="ticker-badge vcb">VCB</span>
+                </div>
+                <!-- VIC group -->
+                <div class="matrix-group-header" style="grid-column: span 4">
+                  <span class="ticker-badge vic">VIC</span>
+                </div>
+              </div>
+
+              <div class="matrix-col-headers matrix-currency-row">
+                <div class="matrix-row-label-spacer"></div>
+                <div class="matrix-currency-header">VND</div>
+                <div class="matrix-currency-header">VND</div>
+                <div class="matrix-currency-header">USD</div>
+                <div class="matrix-currency-header">USD</div>
+                <div class="matrix-currency-header">VND</div>
+                <div class="matrix-currency-header">VND</div>
+                <div class="matrix-currency-header">USD</div>
+                <div class="matrix-currency-header">USD</div>
+              </div>
+
+              <div class="matrix-col-headers matrix-wave-row">
+                <div class="matrix-row-label-spacer"></div>
+                <!-- 8 wavelet condition sub-headers -->
+                <div class="matrix-wave-header wave">W</div>
+                <div class="matrix-wave-header nowave">N</div>
+                <div class="matrix-wave-header wave">W</div>
+                <div class="matrix-wave-header nowave">N</div>
+                <div class="matrix-wave-header wave">W</div>
+                <div class="matrix-wave-header nowave">N</div>
+                <div class="matrix-wave-header wave">W</div>
+                <div class="matrix-wave-header nowave">N</div>
+              </div>
+
+              <!-- Matrix rows: one per model -->
+              <div class="matrix-body" id="matrix-body">
+                <!-- Populated by JS — see js/main.js buildMatrix() -->
+                <!-- Each row: model label + 8 cells -->
+                <!-- Cell IDs: cell-{TICKER}-{CURRENCY}-{wavelet|nowave}-{MODEL} -->
+                <!-- Example structure for reference: -->
+                <!--
+                <div class="matrix-row">
+                  <div class="matrix-row-label">DNN</div>
+                  <div class="matrix-cell pending" id="cell-VCB-VND-wavelet-DNN-regression" data-exp="VCB_VND_wavelet_DNN_regression" title="VCB / VND / Wavelet / DNN">
+                    <span class="cell-folds">0/3</span>
+                  </div>
+                  ...
+                </div>
+                -->
+                <div class="loading-placeholder">Loading matrix…</div>
+              </div>
+
+            </div><!-- /matrix-outer -->
+
+            <!-- Legend -->
+            <div class="matrix-legend">
+              <div class="legend-item"><span class="legend-dot dot-done"></span> Done (3/3)</div>
+              <div class="legend-item"><span class="legend-dot dot-partial"></span> Partial (1–2/3)</div>
+              <div class="legend-item"><span class="legend-dot dot-pending"></span> Pending</div>
+              <div class="legend-item"><span class="legend-dot dot-error"></span> Error</div>
+              <div class="legend-item"><span class="legend-wave">W</span> = Wavelet</div>
+              <div class="legend-item"><span class="legend-wave nowave">N</span> = No-Wave</div>
+            </div>
+
+          </div>
+        </div><!-- /matrix card -->
+
+        <!-- Run / HPO Controls -->
+        <div class="two-col-grid">
+
+          <!-- Run Experiment -->
+          <div class="card">
+            <div class="card-header">
+              <span class="card-title">Run Experiment</span>
+            </div>
+            <div class="card-body">
+              <div class="form-grid">
+                <div class="control-group">
+                  <label class="control-label">Ticker</label>
+                  <select class="select" id="run-ticker">
+                    <option value="VCB">VCB</option>
+                    <option value="VIC">VIC</option>
+                  </select>
+                </div>
+                <div class="control-group">
+                  <label class="control-label">Currency</label>
+                  <select class="select" id="run-currency">
+                    <option value="VND">VND</option>
+                    <option value="USD">USD</option>
+                  </select>
+                </div>
+                <div class="control-group">
+                  <label class="control-label">Wavelet</label>
+                  <select class="select" id="run-wavelet">
+                    <option value="true">With Wavelet</option>
+                    <option value="false">No Wavelet</option>
+                  </select>
+                </div>
+                <div class="control-group">
+                  <label class="control-label">Model</label>
+                  <select class="select" id="run-model">
+                    <option value="BiLSTM">BiLSTM</option>
+                    <option value="LSTM">LSTM</option>
+                    <option value="GRU">GRU</option>
+                    <option value="RNN">RNN</option>
+                    <option value="DNN">DNN</option>
+                  </select>
+                </div>
+                <div class="control-group">
+                  <label class="control-label">Task</label>
+                  <select class="select" id="run-task">
+                    <option value="regression">Regression</option>
+                    <option value="classification">Classification</option>
+                  </select>
+                </div>
+                <div class="control-group">
+                  <label class="control-label">Fold</label>
+                  <select class="select" id="run-fold">
+                    <option value="">All folds</option>
+                    <option value="1">Fold 1 (2018)</option>
+                    <option value="2">Fold 2 (2020)</option>
+                    <option value="3">Fold 3 (2022–24)</option>
+                  </select>
+                </div>
+              </div>
+              <div class="btn-row">
+                <button class="btn btn-primary" id="btn-run-experiment">▶ Run Experiment</button>
+              </div>
+              <!-- Job status area -->
+              <div class="job-status-area hidden" id="run-job-area">
+                <div class="job-status-row">
+                  <span class="job-spinner"></span>
+                  <span id="run-job-progress">Starting…</span>
+                </div>
+                <div class="job-id-text">Job ID: <code id="run-job-id">—</code></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- HPO Trigger -->
+          <div class="card">
+            <div class="card-header">
+              <span class="card-title">Hyperparameter Optimization (BiLSTM)</span>
+            </div>
+            <div class="card-body">
+              <div class="form-grid">
+                <div class="control-group">
+                  <label class="control-label">Ticker</label>
+                  <select class="select" id="hpo-ticker">
+                    <option value="VCB">VCB</option>
+                    <option value="VIC">VIC</option>
+                  </select>
+                </div>
+                <div class="control-group">
+                  <label class="control-label">Currency</label>
+                  <select class="select" id="hpo-currency">
+                    <option value="VND">VND</option>
+                    <option value="USD">USD</option>
+                  </select>
+                </div>
+                <div class="control-group">
+                  <label class="control-label">Wavelet</label>
+                  <select class="select" id="hpo-wavelet">
+                    <option value="true">With Wavelet</option>
+                    <option value="false">No Wavelet</option>
+                  </select>
+                </div>
+                <div class="control-group">
+                  <label class="control-label">Trials</label>
+                  <select class="select" id="hpo-trials">
+                    <option value="5">5 (debug)</option>
+                    <option value="10">10</option>
+                    <option value="30" selected>30 (default)</option>
+                  </select>
+                </div>
+              </div>
+              <div class="info-box">
+                <strong>Note:</strong> HPO phải chạy trước Run Experiment.<br/>
+                Kết quả lưu tại <code>experiments/{ticker}_{currency}_{cond}/fold_{i}/best_params.json</code>
+              </div>
+              <div class="btn-row">
+                <button class="btn btn-accent" id="btn-run-hpo">⚙ Run HPO</button>
+              </div>
+              <div class="job-status-area hidden" id="hpo-job-area">
+                <div class="job-status-row">
+                  <span class="job-spinner"></span>
+                  <span id="hpo-job-progress">Starting HPO…</span>
+                </div>
+                <div class="job-id-text">Job ID: <code id="hpo-job-id">—</code></div>
+              </div>
+            </div>
+          </div>
+
+        </div><!-- /two-col-grid -->
+
+      </section><!-- /section-experiments -->
+
+
+      <!-- ======================================================
+           SECTION 3 — RESULTS: REGRESSION
+           ====================================================== -->
+      <section class="content-section" id="section-regression" data-section="regression">
+
+        <div class="section-header">
+          <h2 class="section-title">Results — Regression</h2>
+          <p class="section-desc">So sánh MSE/MAE/MAPE trước/sau Wavelet × 5 models (replica Table 1 bài báo). Predicted vs Actual price chart.</p>
+        </div>
+
+        <!-- Filter bar -->
+        <div class="controls-row">
+          <div class="control-group">
+            <label class="control-label">Ticker</label>
+            <select class="select" id="reg-ticker">
+              <option value="VCB">VCB</option>
+              <option value="VIC">VIC</option>
+            </select>
+          </div>
+          <div class="control-group">
+            <label class="control-label">Currency</label>
+            <select class="select" id="reg-currency">
+              <option value="VND">VND</option>
+              <option value="USD">USD</option>
+            </select>
+          </div>
+          <div class="control-group">
+            <label class="control-label">Fold</label>
+            <select class="select" id="reg-fold">
+              <option value="3">Fold 3 (2022–24)</option>
+              <option value="1">Fold 1 (2018)</option>
+              <option value="2">Fold 2 (2020)</option>
+            </select>
+          </div>
+          <button class="btn btn-primary" id="btn-load-regression">Load Results</button>
+        </div>
+
+        <!-- Table 1 replica -->
+        <div class="card">
+          <div class="card-header">
+            <span class="card-title">Table 1 — Model Performance (Before / After Wavelet)</span>
+          </div>
+          <div class="card-body no-pad">
+            <div class="table-wrapper">
+              <table class="data-table comparison-table" id="comparison-table">
+                <thead>
+                  <tr>
+                    <th rowspan="2" class="th-model">Model</th>
+                    <th colspan="3" class="th-group th-before">Before Wavelet</th>
+                    <th colspan="3" class="th-group th-after">After Wavelet</th>
+                  </tr>
+                  <tr>
+                    <th>MSE</th><th>MAE</th><th>MAPE (%)</th>
+                    <th>MSE</th><th>MAE</th><th>MAPE (%)</th>
+                  </tr>
+                </thead>
+                <tbody id="comparison-tbody">
+                  <tr><td colspan="7" class="table-empty">Select ticker/currency and click "Load Results"</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <!-- Predicted vs Actual -->
+        <div class="card">
+          <div class="card-header">
+            <span class="card-title">Predicted vs Actual Price</span>
+            <div class="header-controls-inline">
+              <select class="select select-sm" id="pred-model">
+                <option value="BiLSTM">BiLSTM</option>
+                <option value="LSTM">LSTM</option>
+                <option value="GRU">GRU</option>
+                <option value="RNN">RNN</option>
+                <option value="DNN">DNN</option>
+              </select>
+              <select class="select select-sm" id="pred-wavelet">
+                <option value="true">Wavelet</option>
+                <option value="false">No-Wave</option>
+              </select>
+              <button class="btn btn-sm btn-outline" id="btn-load-pred-chart">Load Chart</button>
+            </div>
+          </div>
+          <div class="card-body">
+            <!-- Chart.js canvas — dùng ở Task 8.2 -->
+            <canvas id="chart-pred-actual" class="chart-canvas" aria-label="Predicted vs Actual price chart"></canvas>
+            <div class="chart-placeholder" id="pred-chart-placeholder">Select model and click "Load Chart"</div>
+          </div>
+        </div>
+
+        <!-- Loss curves -->
+        <div class="card">
+          <div class="card-header">
+            <span class="card-title">Training Loss Curves</span>
+            <button class="btn btn-sm btn-outline" id="btn-load-loss">Load Loss</button>
+          </div>
+          <div class="card-body">
+            <canvas id="chart-loss-curves" class="chart-canvas" aria-label="Training loss curves"></canvas>
+            <div class="chart-placeholder" id="loss-placeholder">Click "Load Loss" to view train/val loss per epoch</div>
+          </div>
+        </div>
+
+      </section><!-- /section-regression -->
+
+
+      <!-- ======================================================
+           SECTION 4 — RESULTS: CLASSIFICATION
+           ====================================================== -->
+      <section class="content-section" id="section-classification" data-section="classification">
+
+        <div class="section-header">
+          <h2 class="section-title">Results — Classification</h2>
+          <p class="section-desc">Direction prediction: Accuracy, F1, AUC-ROC. Confusion matrix và ROC curves.</p>
+        </div>
+
+        <!-- Filter bar -->
+        <div class="controls-row">
+          <div class="control-group">
+            <label class="control-label">Ticker</label>
+            <select class="select" id="cls-ticker">
+              <option value="VCB">VCB</option>
+              <option value="VIC">VIC</option>
+            </select>
+          </div>
+          <div class="control-group">
+            <label class="control-label">Currency</label>
+            <select class="select" id="cls-currency">
+              <option value="VND">VND</option>
+              <option value="USD">USD</option>
+            </select>
+          </div>
+          <div class="control-group">
+            <label class="control-label">Wavelet</label>
+            <select class="select" id="cls-wavelet">
+              <option value="true">With Wavelet</option>
+              <option value="false">No Wavelet</option>
+            </select>
+          </div>
+          <div class="control-group">
+            <label class="control-label">Model</label>
+            <select class="select" id="cls-model">
+              <option value="BiLSTM">BiLSTM</option>
+              <option value="LSTM">LSTM</option>
+              <option value="GRU">GRU</option>
+              <option value="RNN">RNN</option>
+              <option value="DNN">DNN</option>
+            </select>
+          </div>
+          <div class="control-group">
+            <label class="control-label">Fold</label>
+            <select class="select" id="cls-fold">
+              <option value="3">Fold 3</option>
+              <option value="1">Fold 1</option>
+              <option value="2">Fold 2</option>
+            </select>
+          </div>
+          <button class="btn btn-primary" id="btn-load-classification">Load Results</button>
+        </div>
+
+        <!-- Metrics cards row -->
+        <div class="metrics-grid" id="cls-metrics-grid">
+          <div class="metric-card" id="mc-accuracy">
+            <div class="metric-label">Accuracy</div>
+            <div class="metric-value">—</div>
+          </div>
+          <div class="metric-card" id="mc-precision">
+            <div class="metric-label">Precision</div>
+            <div class="metric-value">—</div>
+          </div>
+          <div class="metric-card" id="mc-recall">
+            <div class="metric-label">Recall</div>
+            <div class="metric-value">—</div>
+          </div>
+          <div class="metric-card" id="mc-f1">
+            <div class="metric-label">F1 Score</div>
+            <div class="metric-value">—</div>
+          </div>
+          <div class="metric-card" id="mc-auc">
+            <div class="metric-label">AUC-ROC</div>
+            <div class="metric-value">—</div>
+          </div>
+        </div>
+
+        <!-- Classification report + confusion matrix -->
+        <div class="two-col-grid">
+
+          <!-- Classification report table -->
+          <div class="card">
+            <div class="card-header">
+              <span class="card-title">Classification Report (Per Fold)</span>
+            </div>
+            <div class="card-body no-pad">
+              <div class="table-wrapper">
+                <table class="data-table" id="cls-report-table">
+                  <thead>
+                    <tr>
+                      <th>Fold</th>
+                      <th>Accuracy</th>
+                      <th>Precision</th>
+                      <th>Recall</th>
+                      <th>F1</th>
+                      <th>AUC-ROC</th>
+                    </tr>
+                  </thead>
+                  <tbody id="cls-report-tbody">
+                    <tr><td colspan="6" class="table-empty">Click "Load Results"</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
+          <!-- Confusion matrix heatmap -->
+          <div class="card">
+            <div class="card-header">
+              <span class="card-title">Confusion Matrix</span>
+            </div>
+            <div class="card-body">
+              <!-- Rendered as CSS grid 2×2 by JS -->
+              <div class="cm-container" id="cm-container">
+                <div class="chart-placeholder">Click "Load Results" to see matrix</div>
+              </div>
+            </div>
+          </div>
+
+        </div><!-- /two-col-grid -->
+
+        <!-- ROC Curve -->
+        <div class="card">
+          <div class="card-header">
+            <span class="card-title">ROC Curves</span>
+          </div>
+          <div class="card-body">
+            <canvas id="chart-roc" class="chart-canvas chart-canvas-sm" aria-label="ROC curve"></canvas>
+            <div class="chart-placeholder" id="roc-placeholder">Click "Load Results" to view ROC curve</div>
+          </div>
+        </div>
+
+      </section><!-- /section-classification -->
+
+
+      <!-- ======================================================
+           SECTION 5 — TRADING SIMULATION
+           ====================================================== -->
+      <section class="content-section" id="section-trading" data-section="trading">
+
+        <div class="section-header">
+          <h2 class="section-title">Trading Simulation</h2>
+          <p class="section-desc">Cumulative Return vs Buy-and-Hold · Sharpe Ratio · Max Drawdown · Win Rate.</p>
+        </div>
+
+        <!-- Filter bar -->
+        <div class="controls-row">
+          <div class="control-group">
+            <label class="control-label">Ticker</label>
+            <select class="select" id="trade-ticker">
+              <option value="VCB">VCB</option>
+              <option value="VIC">VIC</option>
+            </select>
+          </div>
+          <div class="control-group">
+            <label class="control-label">Currency</label>
+            <select class="select" id="trade-currency">
+              <option value="VND">VND</option>
+              <option value="USD">USD</option>
+            </select>
+          </div>
+          <div class="control-group">
+            <label class="control-label">Fold</label>
+            <select class="select" id="trade-fold">
+              <option value="3">Fold 3 (2022–24)</option>
+              <option value="1">Fold 1 (2018)</option>
+              <option value="2">Fold 2 (2020)</option>
+            </select>
+          </div>
+          <button class="btn btn-primary" id="btn-load-trading">Load Trading Results</button>
+        </div>
+
+        <!-- Cumulative returns chart -->
+        <div class="card">
+          <div class="card-header">
+            <span class="card-title">Cumulative Returns vs Buy-and-Hold</span>
+          </div>
+          <div class="card-body">
+            <canvas id="chart-trading-returns" class="chart-canvas" aria-label="Cumulative trading returns"></canvas>
+            <div class="chart-placeholder" id="trading-placeholder">Click "Load Trading Results"</div>
+          </div>
+        </div>
+
+        <!-- Trading metrics table -->
+        <div class="card">
+          <div class="card-header">
+            <span class="card-title">Trading Metrics (All Models)</span>
+          </div>
+          <div class="card-body no-pad">
+            <div class="table-wrapper">
+              <table class="data-table sortable" id="trading-table">
+                <thead>
+                  <tr>
+                    <th>Model</th>
+                    <th>Wavelet</th>
+                    <th data-col="cumulative_return" class="sortable-col">Cum. Return <span class="sort-icon">↕</span></th>
+                    <th data-col="buyhold_return" class="sortable-col">Buy&Hold <span class="sort-icon">↕</span></th>
+                    <th data-col="sharpe_ratio" class="sortable-col">Sharpe <span class="sort-icon">↕</span></th>
+                    <th data-col="max_drawdown" class="sortable-col">Max DD <span class="sort-icon">↕</span></th>
+                    <th data-col="win_rate" class="sortable-col">Win Rate <span class="sort-icon">↕</span></th>
+                  </tr>
+                </thead>
+                <tbody id="trading-tbody">
+                  <tr><td colspan="7" class="table-empty">Click "Load Trading Results"</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+      </section><!-- /section-trading -->
+
+
+      <!-- ======================================================
+           SECTION 6 — FIGURES (PAPER REPLICATION)
+           ====================================================== -->
+      <section class="content-section" id="section-figures" data-section="figures">
+
+        <div class="section-header">
+          <h2 class="section-title">Figures — Paper Replication</h2>
+          <p class="section-desc">Replica các hình ảnh từ Li et al. (2026): Fig. 11 (MSE comparison), wavelet decomposition, correlation matrix, etc.</p>
+        </div>
+
+        <!-- Fig 11 — MSE comparison bar chart -->
+        <div class="card">
+          <div class="card-header">
+            <span class="card-title">Fig. 11 — MSE Comparison (All Models)</span>
+            <div class="header-controls-inline">
+              <select class="select select-sm" id="fig11-ticker">
+                <option value="VCB">VCB</option>
+                <option value="VIC">VIC</option>
+              </select>
+              <select class="select select-sm" id="fig11-currency">
+                <option value="VND">VND</option>
+                <option value="USD">USD</option>
+              </select>
+              <button class="btn btn-sm btn-outline" id="btn-load-fig11">Load Fig. 11</button>
+            </div>
+          </div>
+          <div class="card-body">
+            <div class="img-container" id="fig11-container">
+              <div class="img-placeholder">Click "Load Fig. 11"</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Two-column: VND vs USD comparison -->
+        <div class="card">
+          <div class="card-header">
+            <span class="card-title">VND vs USD Comparison</span>
+            <button class="btn btn-sm btn-outline" id="btn-load-vnd-usd">Load</button>
+          </div>
+          <div class="card-body no-pad">
+            <div class="table-wrapper">
+              <table class="data-table" id="vnd-usd-table">
+                <thead id="vnd-usd-thead">
+                  <tr><th colspan="6" class="table-empty">Click "Load"</th></tr>
+                </thead>
+                <tbody id="vnd-usd-tbody">
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <!-- Walk-Forward stability chart -->
+        <div class="card">
+          <div class="card-header">
+            <span class="card-title">Walk-Forward Stability — Metrics per Fold</span>
+            <div class="header-controls-inline">
+              <select class="select select-sm" id="wf-ticker">
+                <option value="VCB">VCB</option>
+                <option value="VIC">VIC</option>
+              </select>
+              <select class="select select-sm" id="wf-currency">
+                <option value="VND">VND</option>
+                <option value="USD">USD</option>
+              </select>
+              <button class="btn btn-sm btn-outline" id="btn-load-wf">Load</button>
+            </div>
+          </div>
+          <div class="card-body">
+            <canvas id="chart-wf-stability" class="chart-canvas" aria-label="Walk-forward stability chart"></canvas>
+            <div class="chart-placeholder" id="wf-placeholder">Click "Load" to see fold-by-fold metrics</div>
+          </div>
+        </div>
+
+      </section><!-- /section-figures -->
+
+    </main><!-- /main-content -->
+  </div><!-- /main-wrapper -->
+
+</div><!-- /app-layout -->
+
+
+<!-- ============================================================
+     GLOBAL OVERLAYS
+     ============================================================ -->
+
+<!-- Loading Spinner (full-screen, for heavy operations) -->
+<div class="spinner-overlay hidden" id="spinner-overlay" role="status" aria-live="polite">
+  <div class="spinner-box">
+    <div class="spinner-ring"></div>
+    <p class="spinner-text" id="spinner-text">Loading…</p>
+  </div>
+</div>
+
+<!-- Toast Notification Container -->
+<div class="toast-container" id="toast-container" aria-live="polite" aria-atomic="false"></div>
+
+
+<!-- ============================================================
+     JS — Tasks 8.2 & 8.3 (stubs, order matters)
+     ============================================================ -->
+<script src="/static/js/api.js" defer></script>
+<script src="/static/js/charts.js" defer></script>
+<script src="/static/js/main.js" defer></script>
+
+</body>
+</html>
