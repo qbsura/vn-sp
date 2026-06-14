@@ -500,6 +500,18 @@ async function getVizFigCumulativeReturn(ticker = 'VCB', currency = 'VND', foldI
 }
 
 
+/**
+ * GET /api/results/trading/{ticker}/{currency}/timeseries
+ * Time-series cumulative returns for Chart.js interactive chart.
+ * @param {string} ticker
+ * @param {string} currency
+ * @param {number} [foldIdx]
+ */
+async function getTradingTimeseries(ticker = 'VCB', currency = 'VND', foldIdx = 3) {
+  return _fetch(`${API_BASE}/results/trading/${ticker}/${currency}/timeseries${_qs({ fold_idx: foldIdx })}`);
+}
+
+
 // =============================================================================
 // POLLING — long-running experiments / HPO
 // =============================================================================
@@ -579,6 +591,7 @@ window.VNSP.api = {
   getConfusionMatrix,
   getROCCurve,
   getTradingResults,
+  getTradingTimeseries,
   // Viz — paper figures (Fig. 1–11)
   getVizFig1,
   getVizFig2,

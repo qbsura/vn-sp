@@ -535,3 +535,102 @@ def _validate_currency(currency: str) -> None:
             status_code=400,
             detail=f"currency='{currency}' không hợp lệ. Chọn từ: {CURRENCIES}",
         )
+
+# =============================================================================
+# TRADING TIME-SERIES (dùng cho Chart.js interactive trading chart)
+# =============================================================================
+
+@router.get("/trading/{ticker}/{currency}/timeseries",
+            summary="Trading cumulative return time-series for Chart.js")
+def get_trading_timeseries(
+    ticker  : str,
+    currency: str,
+    fold_idx: int = Query(3, ge=1, le=3),
+) -> dict:
+    """
+    Trả về chuỗi thời gian Strategy_Cumulative và BuyHold_Cumulative
+    cho Chart.js interactive line chart.
+
+    Chạy simulate_trading_weekly() cho tất cả 5 models × 2 wavelet conditions.
+    Khác với endpoint /trading/{t}/{c} chỉ trả summary metrics, endpoint
+    này trả toàn bộ chuỗi thời gian để frontend vẽ chart tương tác.
+
+    Returns:
+        {"ticker": str, "currency": str, "fold_idx": int,
+         "data": [
+           {"model": str, "use_wavelet": bool,
+            "dates": list[str],          ← F_W dates (ISO)
+            "strategy": list[float],     ← Strategy_Cumulative (1.0 = initial)
+            "buyhold":  list[float],     ← BuyHold_Cumulative
+           }, ...
+         ]}
+    """
+    import pickle
+    import numpy as np
+    import pandas as pd
+
+    _validate_ticker(ticker)
+    _validate_currency(currency)
+
+    from app.config import MODELS, FOLDS
+    from app.services.trading_service import (
+        _load_processed_df, simulate_trading_weekly, TRADING_WEEKS_PER_YEAR
+    )
+
+    fold_map = {f["fold_id"]: f for f in FOLDS}
+    if fold_idx not in fold_map:
+        raise HTTPException(status_code=400, detail=f"fold_idx={fold_idx} không hợp lệ.")
+
+    results = []
+
+    for use_wavelet in [True, False]:
+        cond_str = "wavelet" if use_wavelet else "nowave"
+        pkl_path = _EXPERIMENTS_DIR.parent / "data" / "processed" / f"{ticker}_{currency}_{cond_str}.pkl"
+
+        # Try to load pkl for Close prices
+        try:
+            from app.config import PATHS
+            from pathlib import Path
+            pkl_path = Path(PATHS["processed"]) / f"{ticker}_{currency}_{cond_str}.pkl"
+            df_full = _load_processed_df(pkl_path)
+            close_series = df_full["Close"].astype(np.float64)
+        except Exception:
+            continue
+
+        for model_name in MODELS:
+            exp_id   = f"{ticker}_{currency}_{cond_str}_{model_name}_classification"
+            npz_path = _EXPERIMENTS_DIR / exp_id / f"fold_{fold_idx}" / "predictions.npz"
+
+            if not npz_path.exists():
+                continue
+
+            try:
+                npz_data  = np.load(str(npz_path), allow_pickle=False)
+                if "dates" not in npz_data.files:
+                    continue
+                y_pred    = npz_data["y_pred"].astype(np.int32).flatten()
+                f_w_dates = pd.DatetimeIndex(npz_data["dates"])
+
+                trade_df = simulate_trading_weekly(
+                    y_pred       = y_pred,
+                    f_w_dates    = f_w_dates.values,
+                    close_series = close_series,
+                    initial_capital = 1.0,
+                )
+                results.append({
+                    "model"       : model_name,
+                    "use_wavelet" : use_wavelet,
+                    "dates"       : [str(d.date()) for d in trade_df["Date"]],
+                    "strategy"    : [round(float(v), 6) for v in trade_df["Strategy_Cumulative"]],
+                    "buyhold"     : [round(float(v), 6) for v in trade_df["BuyHold_Cumulative"]],
+                })
+            except Exception as exc:
+                logger.warning("timeseries error %s %s: %s", model_name, cond_str, exc)
+                continue
+
+    return {
+        "ticker"  : ticker,
+        "currency": currency,
+        "fold_idx": fold_idx,
+        "data"    : results,
+    }

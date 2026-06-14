@@ -1,70 +1,74 @@
 /**
  * frontend/js/main.js
  * ====================
- * Dashboard controller for VNSP — Task 8.3
+ * Dashboard controller for VNSP — Redesign 2026-06
  *
- * Responsibilities:
- *  - DOMContentLoaded init (navigation, status check, event listeners)
- *  - Section switching
- *  - Experiment matrix building (40 cells)
- *  - Event handlers for all buttons in all sections
- *  - Table rendering helpers
- *  - Table sort (click column header)
- *  - Auto-refresh matrix every 30 s when experiments are running
+ * Sections: Data | Pipeline | Regression | Classification | Trading
+ * All charts/plots support click-to-zoom (modal).
  *
- * Dependencies (loaded before this file in index.html):
- *  Chart.js 4.4.2  ·  api.js  ·  charts.js
- *
+ * Dependencies: Chart.js 4.4.2, api.js, charts.js
  * Namespace: window.VNSP.main
  */
-
 'use strict';
 
-// Shorthand aliases (set after DOMContentLoaded)
+// Shorthand refs (set after DOM ready)
 let api, ui, charts;
 
-// =============================================================================
-// CONSTANTS
-// =============================================================================
+// ── Constants ───────────────────────────────────────────────────────────────
+const MODELS        = ['BiLSTM', 'LSTM', 'GRU', 'RNN', 'DNN'];
+const TICKERS       = ['VCB', 'VIC'];
+const CURRENCIES    = ['VND'];
+const FOLDS         = [1, 2, 3];
+const FOLD_LABELS   = { 1: 'Fold 1 (2018)', 2: 'Fold 2 (2020)', 3: 'Fold 3 (2022–24)' };
 
-const MODELS      = ['DNN', 'RNN', 'GRU', 'LSTM', 'BiLSTM'];
-const TICKERS     = ['VCB', 'VIC'];
-const CURRENCIES  = ['VND'];  // Chỉ VND — USD đã bị loại theo yêu cầu giảng viên
-const FOLDS       = [1, 2, 3];
-const FOLD_LABELS = { 1: 'Fold 1 (2018)', 2: 'Fold 2 (2020)', 3: 'Fold 3 (2022–24)' };
+// Maps lowercase model name → canvas suffix id
+const LOSS_CANVAS = { BiLSTM: 'bilstm', LSTM: 'lstm', GRU: 'gru', RNN: 'rnn', DNN: 'dnn' };
 
-/** 4 column conditions for the matrix — VND only (2T × 1C × 2W) */
-const MATRIX_CONDITIONS = [
-  { ticker:'VCB', currency:'VND', wavelet:true  },
-  { ticker:'VCB', currency:'VND', wavelet:false },
-  { ticker:'VIC', currency:'VND', wavelet:true  },
-  { ticker:'VIC', currency:'VND', wavelet:false },
-];
+// ── Utilities ────────────────────────────────────────────────────────────────
+const sel  = (id) => document.getElementById(id)?.value ?? '';
+const setHTML = (id, html) => { const el = document.getElementById(id); if (el) el.innerHTML = html; };
+const fmt  = (n, d = 4) => (n == null ? '—' : Number(n).toFixed(d));
+const fmtPct = (n)      => (n == null ? '—' : `${(n * 100).toFixed(2)}%`);
+const fmtVnd = (n)      => (n == null ? '—' : Number(n).toLocaleString('vi-VN'));
 
-/** Auto-refresh interval for matrix (ms) */
-const MATRIX_REFRESH_MS = 30_000;
-let   _matrixTimer = null;
-
-
-// =============================================================================
-// UTILITIES
-// =============================================================================
-
-/** Build experiment ID string from parts. */
+/** Build experiment ID */
 function buildExpId(ticker, currency, useWavelet, model, task) {
   const cond = (useWavelet === true || useWavelet === 'true') ? 'wavelet' : 'nowave';
   return `${ticker}_${currency}_${cond}_${model}_${task}`;
 }
 
-/** Read value from a <select> element by ID. */
-const sel = (id) => document.getElementById(id)?.value ?? '';
+/** Show/hide element */
+const setVisible = (id, v) => document.getElementById(id)?.classList.toggle('hidden', !v);
 
-/** Show/hide an element by toggling .hidden class. */
-const setVisible = (id, visible) =>
-  document.getElementById(id)?.classList.toggle('hidden', !visible);
+// ── Image Zoom Modal ─────────────────────────────────────────────────────────
+function initModal() {
+  const overlay = document.getElementById('img-modal');
+  const img     = document.getElementById('modal-img');
+  const closeBtn = document.getElementById('modal-close-btn');
 
-/** Insert a base64 image into an img-container div. */
-function renderImage(containerId, base64Src, alt = '') {
+  // Make any img inside img-container zoomable
+  document.addEventListener('click', (e) => {
+    const target = e.target;
+    if (target.tagName === 'IMG' && target.closest('.img-container, .cm-card, .plot-card-body')) {
+      img.src = target.src;
+      overlay.classList.add('visible');
+    }
+  });
+
+  // Close on overlay click or close button
+  overlay.addEventListener('click', (e) => {
+    if (e.target === overlay) overlay.classList.remove('visible');
+  });
+  closeBtn.addEventListener('click', () => overlay.classList.remove('visible'));
+
+  // Close on Escape key
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') overlay.classList.remove('visible');
+  });
+}
+
+/** Helper: set base64 image in img-container, enable zoom */
+function setImg(containerId, base64Src, alt = '') {
   const el = document.getElementById(containerId);
   if (!el) return;
   el.innerHTML = base64Src
@@ -72,775 +76,607 @@ function renderImage(containerId, base64Src, alt = '') {
     : `<div class="img-placeholder">No image data.</div>`;
 }
 
-/**
- * Generic table body renderer.
- * @param {string}   tbodyId
- * @param {object[]} rows      array of plain objects
- * @param {Array<{key, label, fmt}>} cols   column definitions
- */
-function renderTableBody(tbodyId, rows, cols) {
+// ── Navigation ───────────────────────────────────────────────────────────────
+function switchSection(name) {
+  document.querySelectorAll('.content-section').forEach(s => s.classList.remove('active'));
+  document.querySelectorAll('.nav-item').forEach(a => a.classList.remove('active'));
+  document.getElementById(`section-${name}`)?.classList.add('active');
+  document.querySelector(`.nav-item[data-section="${name}"]`)?.classList.add('active');
+}
+
+// ── API Status ────────────────────────────────────────────────────────────────
+async function checkApiStatus() {
+  const dot  = document.getElementById('status-dot');
+  const text = document.getElementById('status-text');
+  if (!dot) return;
+  dot.className = 'status-dot checking'; text.textContent = 'Checking…';
+  try {
+    const res = await fetch('/health');
+    if (res.ok) { dot.className = 'status-dot online'; text.textContent = 'API Online'; }
+    else throw new Error(res.status);
+  } catch {
+    dot.className = 'status-dot offline'; text.textContent = 'API Offline';
+  }
+}
+
+// =============================================================================
+// SECTION 1 — DATA MANAGEMENT
+// =============================================================================
+
+/** Render a table body from rows array and column key list */
+function renderTable(tbodyId, rows, colKeys) {
   const tbody = document.getElementById(tbodyId);
   if (!tbody) return;
-  if (!rows || !rows.length) {
-    tbody.innerHTML = `<tr><td colspan="${cols.length}" class="table-empty">No data.</td></tr>`;
+  if (!rows?.length) {
+    tbody.innerHTML = `<tr><td colspan="${colKeys.length}" class="table-empty">No data.</td></tr>`;
     return;
   }
-  tbody.innerHTML = rows.map(row =>
-    `<tr>${cols.map(c => {
-      const v = row[c.key] ?? '—';
-      const fmt = c.fmt ? c.fmt(v, row) : v;
-      return `<td class="${c.cls ?? ''}">${fmt}</td>`;
+  tbody.innerHTML = rows.slice(0, 10).map(row =>    // show 10 rows, rest via scroll
+    `<tr>${colKeys.map(k => {
+      const v = row[k];
+      if (k === 'Date') return `<td>${String(v).slice(0, 10)}</td>`;
+      if (k === 'Volume') return `<td>${Number(v).toLocaleString()}</td>`;
+      return `<td>${v != null ? Number(v).toLocaleString('vi-VN') : '—'}</td>`;
     }).join('')}</tr>`
   ).join('');
 }
 
-/** Format a float to N decimal places (or '—' if null). */
-const fmt = (n, d = 4) => (n == null ? '—' : Number(n).toFixed(d));
-const fmtPct = (n, d = 2) => (n == null ? '—' : `${(Number(n) * 100).toFixed(d)}%`);
-const fmtNum = (n) => (n == null ? '—' : Number(n).toLocaleString('en-US', { maximumFractionDigits: 4 }));
+async function loadData() {
+  const ticker   = sel('data-ticker');
+  const wavelet  = sel('data-wavelet') === 'true';
+  const dateFrom = document.getElementById('data-date-from')?.value || '2012-01-01';
+  const dateTo   = document.getElementById('data-date-to')?.value   || '2024-12-31';
 
-
-// =============================================================================
-// TABLE SORT
-// =============================================================================
-
-/** Attach click-to-sort to all .sortable-col <th> elements in a table. */
-function attachTableSort(tableId) {
-  const table = document.getElementById(tableId);
-  if (!table) return;
-
-  table.querySelectorAll('th.sortable-col').forEach(th => {
-    th.addEventListener('click', () => {
-      const col   = th.dataset.col;
-      const tbody = table.querySelector('tbody');
-      if (!tbody || !col) return;
-
-      // Determine sort direction
-      const asc = !th.classList.contains('sort-asc');
-      table.querySelectorAll('th.sortable-col').forEach(h => {
-        h.classList.remove('sort-asc', 'sort-desc');
-      });
-      th.classList.add(asc ? 'sort-asc' : 'sort-desc');
-
-      const colIdx = [...th.parentElement.children].indexOf(th);
-      const rows   = [...tbody.querySelectorAll('tr')];
-
-      rows.sort((a, b) => {
-        const va = a.children[colIdx]?.textContent.trim() ?? '';
-        const vb = b.children[colIdx]?.textContent.trim() ?? '';
-        const na = parseFloat(va.replace(/[^0-9.-]/g, ''));
-        const nb = parseFloat(vb.replace(/[^0-9.-]/g, ''));
-        // Numeric sort if both parse, else string sort
-        const cmp = (!isNaN(na) && !isNaN(nb))
-          ? na - nb
-          : va.localeCompare(vb);
-        return asc ? cmp : -cmp;
-      });
-
-      rows.forEach(r => tbody.appendChild(r));
-    });
-  });
-}
-
-
-// =============================================================================
-// NAVIGATION
-// =============================================================================
-
-/**
- * Switch visible section and update sidebar active state.
- * @param {string} sectionName  e.g. 'data', 'experiments', 'regression'
- */
-function switchSection(sectionName) {
-  // Deactivate all
-  document.querySelectorAll('.content-section').forEach(s => s.classList.remove('active'));
-  document.querySelectorAll('.nav-item').forEach(a => a.classList.remove('active'));
-
-  // Activate target
-  document.getElementById(`section-${sectionName}`)?.classList.add('active');
-  document.querySelector(`.nav-item[data-section="${sectionName}"]`)?.classList.add('active');
-}
-
-
-// =============================================================================
-// API STATUS CHECK
-// =============================================================================
-
-async function checkApiStatus() {
-  const dot  = document.getElementById('status-dot');
-  const text = document.getElementById('status-text');
-  if (!dot || !text) return;
-
-  dot.className  = 'status-dot checking';
-  text.textContent = 'Checking…';
-
+  ui.showSpinner('Loading data…');
   try {
-    const res = await fetch(`${location.origin}/health`);
-    if (res.ok) {
-      dot.className    = 'status-dot online';
-      text.textContent = 'API Online';
-    } else {
-      throw new Error(`${res.status}`);
+    // ── Load tables in parallel ──────────────────────────────────────────
+    const [rawRes, featRes] = await Promise.allSettled([
+      api.getRawData(ticker, 'VND', { start_date: dateFrom, end_date: dateTo, limit: 50 }),
+      api.getFeatures(ticker, 'VND', wavelet, 50),
+    ]);
+
+    // Raw table
+    if (rawRes.status === 'fulfilled' && rawRes.value?.data) {
+      document.getElementById('raw-count').textContent = `${rawRes.value.n_rows} rows`;
+      renderTable('raw-tbody', rawRes.value.data, ['Date', 'Open', 'High', 'Low', 'Close', 'Volume']);
     }
+
+    // Features table (dynamic columns)
+    if (featRes.status === 'fulfilled' && featRes.value?.sample) {
+      const fv = featRes.value;
+      document.getElementById('feat-count').textContent = `${fv.n_rows} rows · ${fv.feature_names.length} features`;
+      const thead = document.getElementById('feat-thead');
+      const cols  = fv.feature_names.slice(0, 8); // show max 8 cols
+      if (thead) thead.innerHTML = `<tr>${cols.map(c => `<th>${c}</th>`).join('')}</tr>`;
+      const rows = fv.sample.map(row =>
+        `<tr>${cols.map(c => `<td>${row[c] != null ? Number(row[c]).toFixed(4) : '—'}</td>`).join('')}</tr>`
+      );
+      setHTML('feat-tbody', rows.join(''));
+    }
+
+    // ── Load plots sequentially (avoid hammering server) ──────────────────
+    await _loadDataPlots(ticker, 'VND', wavelet);
+
+  } catch (e) { /* toast shown by api.js */ }
+  finally { ui.hideSpinner(); }
+}
+
+async function _loadDataPlots(ticker, currency, wavelet) {
+  // ① Deviation Scatter (fig2 via viz endpoint)
+  _loadVizImage('plot-deviation', () => api.getVizFig2(ticker, currency), 'Deviation Scatter');
+
+  // ② Feature Distributions (fig3)
+  _loadVizImage('plot-distributions', () => api.getVizFig3(ticker, currency), 'Distributions');
+
+  // ③ db4 Wavelet & Scaling Functions (fig6, static)
+  _loadVizImage('plot-wavelet-fn', () => api.getVizFig6(), 'Wavelet Functions');
+
+  // ④ Wavelet Decomposition (fig5)
+  _loadVizImage('plot-wavelet-decomp', () => api.getVizFig5(ticker, currency), 'Wavelet Decomp');
+
+  // ⑤ Approx Coefficients (fig7)
+  _loadVizImage('plot-approx', () => api.getVizFig7(ticker, currency), 'Approx Coeff');
+
+  // ⑥ Detail Coefficients (fig8)
+  _loadVizImage('plot-detail', () => api.getVizFig8(ticker, currency), 'Detail Coeff');
+
+  // ⑦ Correlation Matrix (fig10)
+  _loadVizImage('plot-correlation', () => api.getVizFig10(ticker, currency, wavelet), 'Correlation');
+}
+
+/** Generic viz image loader — shows placeholder while loading */
+async function _loadVizImage(containerId, fetchFn, label) {
+  const el = document.getElementById(containerId);
+  if (el) el.innerHTML = `<div class="img-placeholder">Loading ${label}…</div>`;
+  try {
+    const res = await fetchFn();
+    setImg(containerId, res.image, label);
   } catch {
-    dot.className    = 'status-dot offline';
-    text.textContent = 'API Offline';
+    if (el) el.innerHTML = `<div class="img-placeholder text-red">Failed to load ${label}</div>`;
   }
 }
 
-
 // =============================================================================
-// SECTION: DATA MANAGEMENT
+// SECTION 2 — PIPELINE ANALYSIS
 // =============================================================================
 
-/** Render file status cards from /api/data/status */
-async function loadDataStatus() {
-  const grid = document.getElementById('data-status-grid');
-  if (!grid) return;
+async function loadArchitecture() {
+  const ticker  = sel('pipe-ticker');
+  const model   = sel('pipe-model');
+  const task    = sel('pipe-task');
+  const wavelet = sel('pipe-wavelet') === 'true';
+  const fold    = parseInt(sel('pipe-fold'), 10) || 1;
+  const cond    = wavelet ? 'wavelet' : 'nowave';
+  const expId   = buildExpId(ticker, 'VND', wavelet, model, task);
 
+  setHTML('arch-title', `Architecture — ${model} · ${task} · ${wavelet ? 'With Wavelet' : 'No Wavelet'} · ${FOLD_LABELS[fold]}`);
+  setHTML('arch-body', '<div class="loading-placeholder">Loading hyperparameters…</div>');
+  setHTML('flow-body', '<div class="loading-placeholder">Loading…</div>');
+
+  ui.showSpinner('Loading architecture…');
   try {
-    const data  = await api.checkDataStatus();
-    const { raw, processed } = data;
+    // Load actual best_params from API
+    const paramsRes = await api.getBestParams(expId, fold).catch(() => null);
+    const params    = paramsRes?.best_params ?? {};
 
-    const rawItems = Object.entries(raw).map(([k, ok]) =>
-      `<div class="status-item ${ok ? 'ok' : 'missing'}">
-         <span class="file-icon"></span>
-         <span>${k}_raw.csv</span>
-       </div>`
-    );
+    // Feature count: wavelet ~8, nowave = 5 (from preprocessing)
+    // Load actual feature count from features API
+    const featRes = await api.getFeatures(ticker, 'VND', wavelet, 1).catch(() => null);
+    const nFeatures = featRes?.feature_names
+      ? featRes.feature_names.filter(f => f !== 'Close').length
+      : (wavelet ? 8 : 5);
 
-    const pklItems = Object.entries(processed).map(([k, ok]) =>
-      `<div class="status-item ${ok ? 'ok' : 'missing'}">
-         <span class="file-icon"></span>
-         <span>${k}.pkl</span>
-       </div>`
-    );
+    // Render architecture diagram
+    setHTML('arch-body', _renderArchDiagram(model, task, wavelet, params, nFeatures));
+    // Render data flow
+    setHTML('flow-body', _renderDataFlow(model, task, wavelet, params, nFeatures));
 
-    grid.innerHTML = [...rawItems, ...pklItems].join('');
   } catch (e) {
-    grid.innerHTML = `<div class="loading-placeholder">Failed to load status.</div>`;
-  }
+    setHTML('arch-body', `<div class="loading-placeholder text-red">Error: ${e.message}</div>`);
+  } finally { ui.hideSpinner(); }
 }
 
-async function loadRawData() {
-  const ticker   = sel('data-ticker');
-  const currency = sel('data-currency');
-  ui.showSpinner(`Loading ${ticker} raw data…`);
+/** Render architecture visualization as HTML */
+function _renderArchDiagram(model, task, wavelet, params, nFeatures) {
+  const seqLen  = params.sequence_length ?? 20;
+  const hidden  = params.hidden_units    ?? 64;
+  const nLayers = params.num_layers      ?? 1;
+  const dropout = params.dropout_rate    ?? 0.2;
+  const outDim  = task === 'regression' ? 1 : 1;
+  const outAct  = task === 'regression' ? 'Linear' : 'Sigmoid';
 
-  try {
-    const data  = await api.getRawData(ticker, currency, { limit: 200 });
-    const cols  = ['Date','Open','High','Low','Close','Volume'];
-    const apiKeys = ['Date','Open','High','Low','Close','Volume'];
+  // Build model-specific layers HTML
+  let modelLayersHtml = '';
 
-    document.getElementById('raw-data-count').textContent = `${data.n_rows} rows`;
-
-    renderTableBody('raw-data-tbody', data.data,
-      apiKeys.map((k, i) => ({
-        key: k,   // API trả PascalCase: 'Date','Open','High','Low','Close','Volume'
-        label: cols[i],
-        fmt: (v) => {
-          if (k === 'Date') return v;
-          if (k === 'Volume') return Number(v).toLocaleString();
-          return Number(v).toLocaleString('vi-VN');
-        },
-      }))
-    );
-  } catch (_) {
-    /* toast shown by api.js */
-  } finally {
-    ui.hideSpinner();
-  }
-}
-
-async function loadFeatures() {
-  const ticker     = sel('data-ticker');
-  const currency   = sel('data-currency');
-  const useWavelet = sel('data-wavelet') === 'true';
-  ui.showSpinner('Loading features…');
-
-  try {
-    const data = await api.getFeatures(ticker, currency, useWavelet, 50);
-    document.getElementById('features-info').textContent =
-      `${data.n_rows} rows · ${data.feature_names.length} features · ${data.date_range?.start} → ${data.date_range?.end}`;
-
-    const featureCols = data.feature_names;
-
-    // Build header
-    const thead = document.getElementById('features-thead');
-    thead.innerHTML = `<tr>${['Date', ...featureCols].map(c => `<th>${c}</th>`).join('')}</tr>`;
-
-    // Build rows from sample
-    const tbody = document.getElementById('features-tbody');
-    if (!data.sample?.length) {
-      tbody.innerHTML = `<tr><td colspan="${featureCols.length + 1}" class="table-empty">No sample data.</td></tr>`;
-      return;
-    }
-    tbody.innerHTML = data.sample.map(row => {
-      const cols = [row.time ?? row.Date ?? '—', ...featureCols.map(k => fmt(row[k], 4))];
-      return `<tr>${cols.map(v => `<td>${v}</td>`).join('')}</tr>`;
-    }).join('');
-
-  } catch (_) { /* toast shown */ } finally { ui.hideSpinner(); }
-}
-
-async function loadDeviationPlot() {
-  const ticker   = sel('data-ticker');
-  const currency = sel('data-currency');
-  ui.showSpinner('Generating deviation plot…');
-  try {
-    const data = await api.getDeviationPlot(ticker, currency);
-    renderImage('deviation-plot-container', data.image, `${ticker} Deviation Plot`);
-  } catch (_) { /* toast */ } finally { ui.hideSpinner(); }
-}
-
-async function triggerPreprocess() {
-  const ticker     = sel('data-ticker');
-  const currency   = sel('data-currency');
-  const useWavelet = sel('data-wavelet') === 'true';
-  ui.showSpinner(`Preprocessing ${ticker} ${currency}…`);
-  try {
-    const res = await api.triggerPreprocess(ticker, currency, useWavelet);
-    ui.showToast('success', 'Preprocessing done',
-      `${res.n_features} features · ${res.n_rows} rows`);
-    await loadDataStatus();
-  } catch (_) { /* toast */ } finally { ui.hideSpinner(); }
-}
-
-
-// =============================================================================
-// SECTION: EXPERIMENTS
-// =============================================================================
-
-/** Build the 20-cell experiment matrix (VND only: 5M × 4 cond). */
-async function loadExperimentMatrix() {
-  const taskFilter = sel('matrix-task-filter') || 'regression';
-  const body = document.getElementById('matrix-body');
-  if (!body) return;
-  body.innerHTML = `<div class="loading-placeholder">Loading matrix…</div>`;
-
-  try {
-    const data        = await api.getExperimentMatrix({ task: taskFilter });
-    const experiments = data.experiments ?? [];
-
-    // Update summary pills
-    const done = experiments.filter(e => e.status === 'done').length;
-    const part = experiments.filter(e => e.status === 'partial').length;
-    const pend = experiments.filter(e => e.status === 'pending').length;
-    document.getElementById('m-total').textContent   = data.total ?? experiments.length;
-    document.getElementById('m-done').textContent    = done;
-    document.getElementById('m-partial').textContent = part;
-    document.getElementById('m-pending').textContent = pend;
-    document.getElementById('m-error').textContent   =
-      experiments.filter(e => e.status === 'error').length;
-
-    // Build lookup: exp_id → experiment
-    const lookup = Object.fromEntries(experiments.map(e => [e.exp_id, e]));
-
-    // Build HTML rows
-    let html = '';
-    for (const model of MODELS) {
-      html += `<div class="matrix-row"><div class="matrix-row-label">${model}</div>`;
-      for (const cond of MATRIX_CONDITIONS) {
-        const condStr = cond.wavelet ? 'wavelet' : 'nowave';
-        const expId   = buildExpId(cond.ticker, cond.currency, cond.wavelet, model, taskFilter);
-        const exp     = lookup[expId];
-        const status  = exp?.status  ?? 'pending';
-        const folds   = exp ? `${exp.folds_done}/${exp.folds_total}` : '0/3';
-        const title   = `${cond.ticker} / ${cond.currency} / ${condStr} / ${model} / ${taskFilter}`;
-        html += `<div class="matrix-cell ${status}"
-            id="mcell-${expId}"
-            data-exp="${expId}"
-            title="${title}"
-            onclick="VNSP.main.handleCellClick('${expId}', '${taskFilter}')">
-          <span class="cell-folds">${folds}</span>
+  if (model === 'DNN') {
+    modelLayersHtml = `
+      <div class="arch-block model">
+        <div class="arch-label">Flatten</div>
+        <div class="arch-name">Dense Head</div>
+        <div class="arch-dim">${seqLen}×${nFeatures} → ${hidden}</div>
+      </div>
+      <span class="arch-arrow">→</span>
+      <div class="arch-block model">
+        <div class="arch-label">${nLayers} Dense Layer(s)</div>
+        <div class="arch-name">FC + ReLU + BN</div>
+        <div class="arch-dim">hidden=${hidden}</div>
+      </div>`;
+  } else if (model === 'RNN') {
+    modelLayersHtml = `
+      <div class="arch-block model">
+        <div class="arch-label">RNN × ${nLayers}</div>
+        <div class="arch-name">RNN (relu)</div>
+        <div class="arch-dim">in=${nFeatures} h=${hidden}</div>
+      </div>
+      <span class="arch-arrow">→</span>
+      <div class="arch-block model">
+        <div class="arch-label">Last timestep</div>
+        <div class="arch-name">FC Layer</div>
+        <div class="arch-dim">${hidden} → ${hidden}</div>
+      </div>`;
+  } else if (model === 'GRU') {
+    modelLayersHtml = `
+      <div class="arch-block model">
+        <div class="arch-label">GRU × ${nLayers}</div>
+        <div class="arch-name">GRU + BN1d</div>
+        <div class="arch-dim">in=${nFeatures} h=${hidden}</div>
+      </div>
+      <span class="arch-arrow">→</span>
+      <div class="arch-block model">
+        <div class="arch-label">Dropout(${dropout})</div>
+        <div class="arch-name">FC + ReLU</div>
+        <div class="arch-dim">${hidden} → ${hidden/2|0}</div>
+      </div>`;
+  } else if (model === 'LSTM') {
+    modelLayersHtml = `
+      <div class="arch-block model">
+        <div class="arch-label">LSTM × ${nLayers}</div>
+        <div class="arch-name">LSTM + BN1d</div>
+        <div class="arch-dim">in=${nFeatures} h=${hidden}</div>
+      </div>
+      <span class="arch-arrow">→</span>
+      <div class="arch-block model">
+        <div class="arch-label">3 Dense Layers</div>
+        <div class="arch-name">FC256→FC64→FC1</div>
+        <div class="arch-dim">dropout=${dropout}</div>
+      </div>`;
+  } else if (model === 'BiLSTM') {
+    if (wavelet) {
+      // Dual branch for wavelet case
+      const halfFeat = Math.ceil(nFeatures / 2);
+      const fuseSize = hidden * 4;  // 2 branches × 2 directions
+      modelLayersHtml = `
+        <div class="arch-dual-branch">
+          <div class="arch-branch-col">
+            <div class="arch-branch-label">A1 Branch (${halfFeat} feats)</div>
+            <div class="arch-block branch">
+              <div class="arch-label">BiLSTM × ${nLayers}</div>
+              <div class="arch-name">Approx</div>
+              <div class="arch-dim">→ ${hidden*2}</div>
+            </div>
+          </div>
+          <div style="display:flex;align-items:center;padding-top:20px;color:#3a3a5a">⊕</div>
+          <div class="arch-branch-col">
+            <div class="arch-branch-label">D1 Branch (${nFeatures-halfFeat} feats)</div>
+            <div class="arch-block branch">
+              <div class="arch-label">BiLSTM × ${nLayers}</div>
+              <div class="arch-name">Detail</div>
+              <div class="arch-dim">→ ${hidden*2}</div>
+            </div>
+          </div>
+        </div>
+        <span class="arch-arrow">→</span>
+        <div class="arch-block model">
+          <div class="arch-label">Concatenate</div>
+          <div class="arch-name">Fused</div>
+          <div class="arch-dim">${fuseSize}</div>
         </div>`;
-      }
-      html += '</div>';
+    } else {
+      modelLayersHtml = `
+        <div class="arch-block model">
+          <div class="arch-label">BiLSTM × ${nLayers}</div>
+          <div class="arch-name">Bidirectional</div>
+          <div class="arch-dim">in=${nFeatures} h=${hidden}×2</div>
+        </div>
+        <span class="arch-arrow">→</span>
+        <div class="arch-block model">
+          <div class="arch-label">FC Layers</div>
+          <div class="arch-name">Dense Head</div>
+          <div class="arch-dim">${hidden*2} → ${hidden}</div>
+        </div>`;
     }
-    body.innerHTML = html;
-
-    // Schedule auto-refresh if any experiments are still running/partial
-    const hasRunning = experiments.some(e => e.status === 'partial' || e.status === 'pending');
-    _scheduleMatrixRefresh(hasRunning ? MATRIX_REFRESH_MS : 0);
-
-  } catch (_) {
-    body.innerHTML = `<div class="loading-placeholder">Failed to load matrix.</div>`;
   }
+
+  // Params chips
+  const paramChips = Object.entries(params).filter(([k]) => k !== 'n_features').map(([k, v]) =>
+    `<div class="param-chip">
+      <div class="param-key">${k.replace(/_/g,' ')}</div>
+      <div class="param-val">${v}</div>
+    </div>`
+  ).join('');
+
+  return `
+    <div class="arch-flow">
+      <div class="arch-block input">
+        <div class="arch-label">Input Sequence</div>
+        <div class="arch-name">Sequences</div>
+        <div class="arch-dim">${seqLen} × ${nFeatures}</div>
+      </div>
+      <span class="arch-arrow">→</span>
+      ${modelLayersHtml}
+      <span class="arch-arrow">→</span>
+      <div class="arch-block output">
+        <div class="arch-label">Output Head</div>
+        <div class="arch-name">${outAct}</div>
+        <div class="arch-dim">→ ${outDim}</div>
+      </div>
+    </div>
+    ${paramChips ? `<div class="section-label mt-12">Best Hyperparameters</div><div class="params-grid">${paramChips}</div>` : ''}`;
 }
 
-/** Click on a matrix cell → navigate to results section with that exp pre-selected. */
-function handleCellClick(expId, task = 'regression') {
-  const parts = expId.split('_');
-  if (parts.length < 5) return;
-  const [ticker, currency] = parts;
+/** Render data processing flow description */
+function _renderDataFlow(model, task, wavelet, params, nFeatures) {
+  const seqLen  = params.sequence_length ?? 20;
+  const steps = wavelet ? [
+    { icon: '1', label: 'Raw OHLCV (5)', desc: 'Open, High, Low, Close, Volume · VND' },
+    { icon: '2', label: '+ Deviation', desc: 'Deviation = Close − Open (buy/sell pressure)' },
+    { icon: '3', label: 'SWT db4 Level-1', desc: 'Each feature → Approx (A1) + Detail (D1) = 10 coefficients' },
+    { icon: '4', label: 'Feature Selection', desc: `Pearson |r| > 0.95 threshold · fit on Fold 1 train (≤2017) · ${nFeatures} features kept` },
+    { icon: '5', label: 'StandardScaler / RobustScaler', desc: 'Price/Deviation → StandardScaler · Volume → RobustScaler · Open_Approx unscaled' },
+    { icon: '6', label: `Sliding Window (L=${seqLen})`, desc: `Each sample: ${seqLen} × ${nFeatures} array → predict ${task === 'regression' ? 'Close(t+1)' : 'direction of next week'}` },
+  ] : [
+    { icon: '1', label: 'Raw OHLCV (5)', desc: 'Open, High, Low, Close, Volume · VND' },
+    { icon: '2', label: '+ Deviation', desc: 'Deviation = Close − Open (buy/sell pressure)' },
+    { icon: '3', label: '5 Raw Features', desc: 'Open, High, Low, Volume, Deviation · Close as target' },
+    { icon: '4', label: 'StandardScaler / RobustScaler', desc: 'Price/Deviation → StandardScaler · Volume → RobustScaler · Open unscaled' },
+    { icon: '5', label: `Sliding Window (L=${seqLen})`, desc: `Each sample: ${seqLen} × ${nFeatures} array → predict ${task === 'regression' ? 'Close(t+1)' : 'direction of next week'}` },
+  ];
 
-  if (task === 'regression') {
-    document.getElementById('reg-ticker').value   = ticker;
-    document.getElementById('reg-currency').value = currency;
-    switchSection('regression');
-    loadRegression();
-  } else {
-    document.getElementById('cls-ticker').value   = ticker;
-    document.getElementById('cls-currency').value = currency;
-    switchSection('classification');
-  }
+  const taskDesc = task === 'regression'
+    ? 'Loss: MSE · Metrics: MSE, MAE, MAPE, RMSE, R² · Output: price value (inverse-transformed to VND)'
+    : 'Loss: BCELoss + Sigmoid · Metrics: Accuracy, F1, AUC-ROC · Output: P(UP) probability · Target: weekly direction T2→T6';
+
+  return `
+    <div class="arch-flow" style="flex-direction:column;align-items:flex-start;gap:8px">
+      ${steps.map(s => `
+        <div style="display:flex;align-items:center;gap:12px;width:100%">
+          <div style="width:22px;height:22px;border-radius:50%;background:var(--blue-dim);
+            color:var(--blue);font-size:11px;font-weight:700;display:flex;align-items:center;
+            justify-content:center;flex-shrink:0">${s.icon}</div>
+          <div>
+            <div style="font-weight:600;font-size:12px">${s.label}</div>
+            <div style="font-size:11px;color:var(--fg-dim)">${s.desc}</div>
+          </div>
+        </div>
+        ${s !== steps[steps.length-1] ? '<div style="margin-left:10px;color:var(--border2)">↓</div>' : ''}
+      `).join('')}
+    </div>
+    <div class="mt-12" style="background:var(--bg3);border:1px solid var(--border);border-radius:6px;padding:10px 14px">
+      <div class="section-label" style="margin-bottom:6px">Task: ${task.toUpperCase()}</div>
+      <div style="font-size:12px;color:var(--fg-dim)">${taskDesc}</div>
+    </div>`;
 }
 
-/** Auto-refresh matrix: enable periodic poll if delay > 0, else cancel. */
-function _scheduleMatrixRefresh(delayMs) {
-  if (_matrixTimer) clearInterval(_matrixTimer);
-  _matrixTimer = null;
-  if (delayMs > 0) {
-    _matrixTimer = setInterval(loadExperimentMatrix, delayMs);
-  }
+// Load static pipeline diagrams when entering pipeline section
+async function loadPipelineOverview() {
+  _loadVizImage('pipe-fig1', () => api.getVizFig1(),  'Pipeline Framework');
+  _loadVizImage('pipe-fig9', () => api.getVizFig9(),  'SWT Decomposition');
 }
-
-/** Show/update job progress area (run experiment or HPO). */
-function _showJobArea(areaId, progressId, jobIdElId, jobId, progress) {
-  setVisible(areaId, true);
-  document.getElementById(progressId).textContent = progress;
-  document.getElementById(jobIdElId).textContent  = jobId;
-}
-
-async function submitRunExperiment() {
-  const config = {
-    ticker      : sel('run-ticker'),
-    currency    : sel('run-currency'),
-    use_wavelet : sel('run-wavelet') === 'true',
-    model       : sel('run-model'),
-    task        : sel('run-task'),
-    fold        : sel('run-fold') ? parseInt(sel('run-fold'), 10) : null,
-  };
-  if (!config.fold) delete config.fold;
-
-  try {
-    const res = await api.runExperiment(config);
-    ui.showToast('info', 'Experiment started', `Job ID: ${res.job_id}`);
-    _showJobArea('run-job-area', 'run-job-progress', 'run-job-id', res.job_id, '0/3 folds starting…');
-
-    // Show in header badge
-    setVisible('job-badge', true);
-    document.getElementById('job-badge-text').textContent = `Experiment ${res.exp_id}…`;
-
-    api.pollJob(
-      res.job_id,
-      (s) => _showJobArea('run-job-area', 'run-job-progress', 'run-job-id', res.job_id, s.progress),
-      (s) => {
-        _showJobArea('run-job-area', 'run-job-progress', 'run-job-id', res.job_id, '✓ Done');
-        ui.showToast('success', 'Experiment complete', s.exp_id);
-        setVisible('job-badge', false);
-        loadExperimentMatrix();   // refresh matrix
-      },
-      (err) => {
-        _showJobArea('run-job-area', 'run-job-progress', 'run-job-id', res.job_id, `✕ Error: ${err}`);
-        ui.showToast('error', 'Experiment failed', err);
-        setVisible('job-badge', false);
-      }
-    );
-  } catch (_) { /* toast shown by api.js */ }
-}
-
-async function submitRunHPO() {
-  const config = {
-    ticker      : sel('hpo-ticker'),
-    currency    : sel('hpo-currency'),
-    use_wavelet : sel('hpo-wavelet') === 'true',
-    n_trials    : parseInt(sel('hpo-trials'), 10) || 30,
-  };
-
-  try {
-    const res = await api.runHPO(config);
-    ui.showToast('info', 'HPO started', `${res.label} · ${config.n_trials} trials/fold`);
-    _showJobArea('hpo-job-area', 'hpo-job-progress', 'hpo-job-id', res.job_id, 'HPO running (3 folds)…');
-
-    setVisible('job-badge', true);
-    document.getElementById('job-badge-text').textContent = `HPO ${res.label}…`;
-
-    api.pollJob(
-      res.job_id,
-      (s) => _showJobArea('hpo-job-area', 'hpo-job-progress', 'hpo-job-id', res.job_id, s.progress),
-      () => {
-        _showJobArea('hpo-job-area', 'hpo-job-progress', 'hpo-job-id', res.job_id, '✓ HPO Done');
-        ui.showToast('success', 'HPO complete', `best_params.json saved`);
-        setVisible('job-badge', false);
-      },
-      (err) => {
-        _showJobArea('hpo-job-area', 'hpo-job-progress', 'hpo-job-id', res.job_id, `✕ ${err}`);
-        ui.showToast('error', 'HPO failed', err);
-        setVisible('job-badge', false);
-      }
-    );
-  } catch (_) { /* toast */ }
-}
-
 
 // =============================================================================
-// SECTION: REGRESSION
+// SECTION 3 — REGRESSION
 // =============================================================================
 
 async function loadRegression() {
-  const ticker   = sel('reg-ticker');
-  const currency = sel('reg-currency');
+  const ticker  = sel('reg-ticker');
+  const wavelet = sel('reg-wavelet') === 'true';
+  const fold    = parseInt(sel('reg-fold'), 10) || 3;
+  const wLabel  = wavelet ? 'With Wavelet' : 'No Wavelet';
+  document.getElementById('reg-table-label').textContent = `${ticker} · VND · ${wLabel} · ${FOLD_LABELS[fold]}`;
+
   ui.showSpinner('Loading regression results…');
-
   try {
-    const data = await api.getComparisonTable(ticker, currency, 'regression');
+    // ── Comparison table (mean across folds from API) ─────────────────────
+    const tbl = await api.getComparisonTable(ticker, 'VND', 'regression').catch(() => null);
+    if (tbl) _renderRegressionTable(tbl, wavelet);
 
-    const models       = data.models ?? [];
-    const beforeWave   = data.before_wavelet ?? {};
-    const afterWave    = data.after_wavelet  ?? {};
-
-    const tbody = document.getElementById('comparison-tbody');
-    tbody.innerHTML = models.map((m, i) => `
-      <tr>
-        <td style="font-family:var(--font-mono);font-weight:600">${m}</td>
-        <td>${fmtNum(beforeWave.MSE?.[i])}</td>
-        <td>${fmtNum(beforeWave.MAE?.[i])}</td>
-        <td>${fmt(beforeWave.MAPE?.[i], 2)}</td>
-        <td class="text-success">${fmtNum(afterWave.MSE?.[i])}</td>
-        <td class="text-success">${fmtNum(afterWave.MAE?.[i])}</td>
-        <td class="text-success">${fmt(afterWave.MAPE?.[i], 2)}</td>
-      </tr>`
-    ).join('');
-
-    // Render MSE comparison chart vào canvas riêng (không dùng chart-pred-actual)
-    charts.renderMSEComparison('chart-mse-comparison', {
-      models, before_wavelet: beforeWave, after_wavelet: afterWave, metric: 'MSE',
-      placeholderId: 'mse-comparison-placeholder',
+    // ── Predicted vs Actual — collect all 5 models ────────────────────────
+    // dates có thể null với regression (chỉ classification weekly có dates)
+    // → dùng index làm X labels nếu dates không có
+    const predPromises = MODELS.map(model => {
+      const expId = buildExpId(ticker, 'VND', wavelet, model, 'regression');
+      return api.getPredictions(expId, fold)
+        .then(r => ({
+          model,
+          wavelet,
+          y_true: Array.isArray(r.y_true) ? r.y_true : [],
+          y_pred: Array.isArray(r.y_pred) ? r.y_pred : [],
+          dates : Array.isArray(r.dates) && r.dates.length ? r.dates : null,
+        }))
+        .catch(() => null);
     });
+    const predResults = (await Promise.allSettled(predPromises))
+      .filter(r => r.status === 'fulfilled' && r.value && r.value.y_true.length)
+      .map(r => r.value);
 
-    ui.showToast('success', 'Regression results loaded', `${models.length} models`);
-  } catch (_) { /* toast */ } finally { ui.hideSpinner(); }
-}
+    if (predResults.length > 0) {
+      charts.buildPredChart('pred-chart', predResults);
+    }
 
-// Predicted vs Actual — tải cả 5 models cùng lúc, mỗi model 1 màu riêng
-async function loadPredChart() {
-  const ticker     = sel('reg-ticker');
-  const currency   = sel('reg-currency');
-  const useWavelet = sel('pred-wavelet') === 'true';
-  const fold       = parseInt(sel('reg-fold'), 10) || 3;
-
-  ui.showSpinner('Loading predictions (5 models)…');
-  try {
-    // Tải song song 5 models
-    const results = await Promise.allSettled(
-      MODELS.map(m => api.getPredictions(
-        buildExpId(ticker, currency, useWavelet, m, 'regression'), fold
-      ))
-    );
-
-    // Lấy y_true từ model đầu tiên thành công (giống nhau cho mọi model)
-    const first = results.find(r => r.status === 'fulfilled');
-    if (!first) throw new Error('Không tải được predictions cho bất kỳ model nào.');
-
-    const actual = first.value.y_true;
-    const dates  = first.value.dates;
-
-    // Build multi-model format cho renderPredictedVsActual
-    const modelDatasets = MODELS.map((m, i) => ({
-      name : m,
-      preds: results[i].status === 'fulfilled' ? results[i].value.y_pred : null,
-    })).filter(d => d.preds !== null);
-
-    charts.renderPredictedVsActual('chart-pred-actual', {
-      actual, dates, models: modelDatasets, ticker, currency,
-      placeholderId: 'pred-chart-placeholder',
-    });
-    // Hiện hint zoom sau khi chart đã load
-    const hint = document.getElementById('pred-zoom-hint');
-    if (hint) hint.style.display = 'block';
-  } catch (_) { /* toast */ } finally { ui.hideSpinner(); }
-}
-
-// Loss Curves — tải cả 5 models cùng lúc, hiển thị trong 5 panels riêng
-async function loadLossCurves() {
-  const ticker     = sel('reg-ticker');
-  const currency   = sel('reg-currency');
-  const useWavelet = sel('pred-wavelet') === 'true';
-  const fold       = parseInt(sel('reg-fold'), 10) || 1;
-
-  ui.showSpinner('Loading loss curves (5 models)…');
-  try {
-    const results = await Promise.allSettled(
-      MODELS.map(m => api.getLossCurves(
-        buildExpId(ticker, currency, useWavelet, m, 'regression'), fold
-      ))
-    );
-
-    MODELS.forEach((m, i) => {
-      if (results[i].status === 'fulfilled') {
-        charts.renderLossCurves(`chart-loss-${m}`, {
-          ...results[i].value,
-          modelLabel      : m,
-          placeholderId   : `loss-${m}-placeholder`,
+    // ── Loss curves — one per model ────────────────────────────────────────
+    MODELS.forEach(async model => {
+      const expId = buildExpId(ticker, 'VND', wavelet, model, 'regression');
+      try {
+        const lc = await api.getLossCurves(expId, fold);
+        charts.buildLossChart(`loss-chart-${LOSS_CANVAS[model]}`, {
+          train_losses: lc.train_losses,
+          val_losses  : lc.val_losses,
+          best_epoch  : lc.best_epoch,
+          model_label : `${model}`,
         });
-      }
+      } catch { /* skip if not available */ }
     });
-  } catch (_) { /* toast */ } finally { ui.hideSpinner(); }
+
+  } catch (e) { /* toast */ }
+  finally { ui.hideSpinner(); }
 }
 
+function _renderRegressionTable(tbl, showWavelet) {
+  // tbl from comparison-table API: {models, before_wavelet: {MSE,MAE,...}, after_wavelet: {...}}
+  const tbody = document.getElementById('reg-metrics-tbody');
+  if (!tbody) return;
+
+  const key   = showWavelet ? 'after_wavelet' : 'before_wavelet';
+  const data  = tbl[key];
+  const models = tbl.models || MODELS;
+
+  if (!data) {
+    tbody.innerHTML = `<tr><td colspan="6" class="table-empty">No data for this condition.</td></tr>`;
+    return;
+  }
+
+  // Find best values per metric
+  const metrics = ['MSE', 'MAE', 'MAPE', 'RMSE', 'R2'];
+  const best = {};
+  metrics.forEach(m => {
+    if (!data[m]) return;
+    const vals = data[m].filter(v => v != null);
+    if (m === 'R2') best[m] = Math.max(...vals);
+    else best[m] = Math.min(...vals);
+  });
+
+  tbody.innerHTML = models.map((model, i) => {
+    const row = metrics.map(m => {
+      const v = data[m]?.[i];
+      if (v == null) return '<td>—</td>';
+      const isBest = Math.abs(v - best[m]) < 1e-10;
+      const cls = isBest ? 'best-val' : '';
+      return `<td class="${cls}">${fmt(v)}</td>`;
+    }).join('');
+    return `<tr><td class="model-name">${model}</td>${row}</tr>`;
+  }).join('');
+}
 
 // =============================================================================
-// SECTION: CLASSIFICATION (Weekly, T2–T6 — Phương án D, 2026-06)
-// Mỗi sample = 1 tuần; y_pred dự đoán hướng đi của tuần KẾ TIẾP so với
-// Close cuối tuần hiện tại (không phải ngày kế tiếp như trước).
+// SECTION 4 — CLASSIFICATION
 // =============================================================================
 
 async function loadClassification() {
-  const ticker     = sel('cls-ticker');
-  const currency   = sel('cls-currency');
-  const useWavelet = sel('cls-wavelet') === 'true';
-  const model      = sel('cls-model');
-  const fold       = parseInt(sel('cls-fold'), 10) || 3;
-  const expId      = buildExpId(ticker, currency, useWavelet, model, 'classification');
+  const ticker  = sel('cls-ticker');
+  const wavelet = sel('cls-wavelet') === 'true';
+  const fold    = parseInt(sel('cls-fold'), 10) || 3;
+
   ui.showSpinner('Loading classification results…');
-
   try {
-    // Load all three classification views in parallel
-    const [reportData, cmData, rocData] = await Promise.allSettled([
-      api.getClassificationReport(expId),
-      api.getConfusionMatrix(expId, fold),
-      api.getROCCurve(expId, fold),
-    ]);
+    // ── Fetch classification report for all 5 models in parallel ─────────
+    // API scans all 3 folds internally — không cần truyền fold_idx
+    // threshold default 0.5 (không cần truyền)
+    const reportPromises = MODELS.map(model => {
+      const expId = buildExpId(ticker, 'VND', wavelet, model, 'classification');
+      return api.getClassificationReport(expId)
+        .then(r => {
+          // Lấy metrics của fold được chọn, fallback sang aggregated
+          const foldData = r.folds?.find(f => f.fold_idx === fold);
+          const metrics  = foldData?.metrics || {};
+          return { model, metrics, aggregated: r.aggregated, error: false };
+        })
+        .catch(() => ({ model, metrics: {}, aggregated: null, error: true }));
+    });
+    const reports = await Promise.all(reportPromises);
 
-    // Classification report table + metric cards
-    if (reportData.status === 'fulfilled') {
-      const folds = reportData.value.folds ?? [];
-      const agg   = reportData.value.aggregated ?? {};
+    // ── Metrics table ─────────────────────────────────────────────────────
+    _renderClassificationTable(reports);
 
-      renderTableBody('cls-report-tbody', folds,
-        ['fold_idx', 'Accuracy', 'Precision', 'Recall', 'F1', 'AUC_ROC'].map(k => ({
-          key: k === 'fold_idx' ? 'fold_idx' : 'metrics',
-          label: k,
-          fmt: k === 'fold_idx'
-            ? (v, row) => FOLD_LABELS[row.fold_idx] ?? row.fold_idx
-            : (_, row) => row.status === 'done' ? fmt(row.metrics?.[k], 4) : '—',
-        }))
-      );
+    // ── Confusion matrices ────────────────────────────────────────────────
+    const cmPromises = MODELS.map(model => {
+      const expId = buildExpId(ticker, 'VND', wavelet, model, 'classification');
+      return api.getConfusionMatrix(expId, fold)
+        .then(r => ({ model, stats: r.stats }))
+        .catch(() => null);
+    });
+    const cmResults = await Promise.all(cmPromises);
+    cmResults.forEach(cm => {
+      if (!cm) return;
+      charts.renderConfusionMatrix(`cm-${cm.model}`, cm);
+    });
 
-      // Update metric cards (use aggregated means)
-      const metricIds = { Accuracy: 'mc-accuracy', Precision: 'mc-precision',
-                          Recall: 'mc-recall',    F1: 'mc-f1', AUC_ROC: 'mc-auc' };
-      for (const [metric, cardId] of Object.entries(metricIds)) {
-        const el = document.getElementById(cardId);
-        if (!el) continue;
-        const val = agg[`${metric}_mean`];
-        el.querySelector('.metric-value').textContent = val != null ? fmt(val, 4) : '—';
-      }
-    }
+    // ── ROC curves overlay ────────────────────────────────────────────────
+    const rocPromises = MODELS.map(model => {
+      const expId = buildExpId(ticker, 'VND', wavelet, model, 'classification');
+      return api.getROCCurve(expId, fold)
+        .then(r => ({ model, use_wavelet: wavelet, fpr: r.fpr, tpr: r.tpr, auc_roc: r.auc_roc }))
+        .catch(() => null);
+    });
+    const rocResults = (await Promise.all(rocPromises)).filter(Boolean);
+    if (rocResults.length) charts.buildRocOverlayChart('roc-chart', rocResults);
 
-    // Confusion matrix (HTML render)
-    if (cmData.status === 'fulfilled') {
-      charts.renderConfusionMatrix('cm-container', cmData.value);
-    }
-
-    // ROC curve (Chart.js)
-    if (rocData.status === 'fulfilled') {
-      charts.renderROCCurve('chart-roc', {
-        ...rocData.value,
-        label   : `${model} ${useWavelet ? '(Wave)' : '(No-Wave)'}`,
-        placeholderId: 'roc-placeholder',
-      });
-    }
-
-    ui.showToast('success', 'Classification results loaded', 'Weekly (T2–T6) direction');
-  } catch (_) { /* toast */ } finally { ui.hideSpinner(); }
+  } catch (e) { /* toast */ }
+  finally { ui.hideSpinner(); }
 }
 
+function _renderClassificationTable(reports) {
+  const tbody = document.getElementById('cls-metrics-tbody');
+  if (!tbody) return;
+
+  // compute_classification_metrics returns PascalCase: Accuracy, Precision, Recall, F1, AUC_ROC
+  const metrics = ['Accuracy', 'Precision', 'Recall', 'F1', 'AUC_ROC'];
+
+  // Find best per metric across models
+  const best = {};
+  metrics.forEach(m => {
+    const vals = reports.map(r => r.metrics?.[m]).filter(v => v != null && !isNaN(v));
+    if (vals.length) best[m] = Math.max(...vals);
+  });
+
+  tbody.innerHTML = reports.map(r => {
+    if (r.error) {
+      return `<tr><td class="model-name">${r.model}</td><td colspan="5" class="text-red">No data</td></tr>`;
+    }
+    const m_data = r.metrics || {};
+    const cells = metrics.map(m => {
+      const v = m_data[m];
+      if (v == null || isNaN(v)) return '<td>—</td>';
+      const isBest = best[m] != null && Math.abs(v - best[m]) < 1e-6;
+      return `<td class="${isBest ? 'best-val' : ''}">${fmtPct(v)}</td>`;
+    }).join('');
+    return `<tr><td class="model-name">${r.model}</td>${cells}</tr>`;
+  }).join('');
+}
 
 // =============================================================================
-// SECTION: TRADING (Weekly — Phương án D, 2026-06)
-// run_trading_simulation_all_models() đã viết lại weekly: return tính theo
-// Close(F_W+1)/Close(F_W) mỗi tuần; Sharpe annualize ×√52. Cấu trúc response
-// (field names) không đổi nên không cần sửa renderTableBody/renderCumulativeReturn.
+// SECTION 5 — TRADING SIMULATION
 // =============================================================================
+
+let _tradeWavelet = true; // current tab selection
 
 async function loadTrading() {
-  const ticker   = sel('trade-ticker');
-  const currency = sel('trade-currency');
-  const fold     = parseInt(sel('trade-fold'), 10) || 3;
+  const ticker = sel('trade-ticker');
+  const fold   = parseInt(sel('trade-fold'), 10) || 3;
+
   ui.showSpinner('Loading trading simulation…');
-
   try {
-    const data = await api.getTradingResults(ticker, currency, fold);
-    const rows = data.data ?? [];
-
-    // Render summary bar chart
-    if (rows.length) {
-      charts.renderCumulativeReturn('chart-trading-returns', {
-        rows,
-        placeholderId: 'trading-placeholder',
-      });
-    }
-
-    // Render table
-    renderTableBody('trading-tbody', rows, [
-      { key: 'model',             label: 'Model',       fmt: v => `<strong>${v ?? '—'}</strong>` },
-      { key: 'use_wavelet',       label: 'Wavelet',     fmt: v => v ? '✓ Wave' : 'No-Wave' },
-      { key: 'Cumulative_Return', label: 'Cum. Return', fmt: v => fmtPct(v) },
-      { key: 'BuyHold_Return',    label: 'Buy & Hold',  fmt: v => fmtPct(v) },
-      { key: 'Sharpe_Ratio',      label: 'Sharpe',      fmt: v => fmt(v, 3) },
-      { key: 'Max_Drawdown',      label: 'Max DD',      fmt: v => fmtPct(v) },
-      { key: 'Win_Rate',          label: 'Win Rate',    fmt: v => fmtPct(v) },
+    // ── Fetch timeseries + summary in parallel ─────────────────────────────
+    const [tsRes, sumRes] = await Promise.allSettled([
+      api.getTradingTimeseries(ticker, 'VND', fold),
+      api.getTradingResults(ticker, 'VND', fold),
     ]);
 
-    attachTableSort('trading-table');
-    ui.showToast('success', 'Trading results loaded (weekly)', `${rows.length} model variants`);
-  } catch (_) { /* toast */ } finally { ui.hideSpinner(); }
+    // Chart.js line chart
+    if (tsRes.status === 'fulfilled' && tsRes.value?.data?.length) {
+      charts.buildTradingLineChart('trade-chart', tsRes.value.data, _tradeWavelet);
+    }
+
+    // Summary table
+    if (sumRes.status === 'fulfilled' && sumRes.value?.data?.length) {
+      _renderTradingTable(sumRes.value.data);
+    }
+
+  } catch (e) { /* toast */ }
+  finally { ui.hideSpinner(); }
 }
 
-// ── Cumulative Return per Model — Weekly, annotated chart (Phase 5) ─────────────
-// Gọi /api/viz/fig-cumulative-return → fig_cumulative_return() (đã viết lại
-// dùng simulate_trading_weekly() ở Phase 5). Ảnh có sẵn stats panel
-// (Sharpe / Max DD / Win Rate per model) nên không cần render thêm bảng.
-async function loadTradingCumRet() {
-  const ticker   = sel('trade-ticker');
-  const currency = sel('trade-currency');
-  const fold     = parseInt(sel('trade-fold'), 10) || 3;
-  const wavelet  = sel('trade-wavelet') === 'true';
-  ui.showSpinner('Generating Cumulative Return chart…');
-  try {
-    const res = await api.getVizFigCumulativeReturn(ticker, currency, fold, wavelet);
-    renderImage('trading-cumret-container', res.image, 'Cumulative Return per Model (Weekly)');
-  } catch (_) { /* toast shown by api._fetch */ } finally { ui.hideSpinner(); }
+function _renderTradingTable(rows) {
+  const tbody = document.getElementById('trade-tbody');
+  if (!tbody) return;
+
+  const validRows = rows.filter(r => r.status === 'ok' || r.Cumulative_Return != null);
+
+  // Find best cumulative return per wavelet group
+  const waveRows  = validRows.filter(r => r.wavelet === true);
+  const noWave    = validRows.filter(r => r.wavelet === false);
+  const bestCumW  = Math.max(...waveRows.map(r => r.Cumulative_Return || 0));
+  const bestCumN  = Math.max(...noWave.map(r => r.Cumulative_Return || 0));
+
+  tbody.innerHTML = rows.map(r => {
+    const waveLabel = r.wavelet ? '<span class="text-blue">✓ Wave</span>' : 'No Wave';
+    const cum = r.Cumulative_Return;
+    const bnh = r.BuyHold_Return;
+    const isBest = r.wavelet ? Math.abs(cum - bestCumW) < 1e-4 : Math.abs(cum - bestCumN) < 1e-4;
+
+    return `<tr>
+      <td class="model-name">${r.model}</td>
+      <td>${waveLabel}</td>
+      <td class="${isBest ? 'best-val' : ''}">${fmtPct(cum)}</td>
+      <td>${fmtPct(bnh)}</td>
+      <td>${r.Sharpe_Ratio != null ? fmt(r.Sharpe_Ratio, 3) : '—'}</td>
+      <td>${r.Max_Drawdown != null ? fmtPct(r.Max_Drawdown) : '—'}</td>
+      <td>${r.Win_Rate != null ? fmtPct(r.Win_Rate) : '—'}</td>
+    </tr>`;
+  }).join('');
 }
 
+// Switch wavelet tab → redraw chart
+function _switchTradeTab(showWavelet) {
+  _tradeWavelet = showWavelet;
+  document.getElementById('trade-tab-wave')?.classList.toggle('active', showWavelet);
+  document.getElementById('trade-tab-nowave')?.classList.toggle('active', !showWavelet);
+  // Re-render chart if data already loaded (stored in chart)
+  const canvas = document.getElementById('trade-chart');
+  if (canvas._tsData) charts.buildTradingLineChart('trade-chart', canvas._tsData, showWavelet);
+}
 
 // =============================================================================
-// SECTION: FIGURES
-// =============================================================================
-
-// ── Helper: load a static figure (no data params) ────────────────────────────
-
-/**
- * Load một static figure không cần params.
- * @param {Function} apiFn        api function to call (e.g. api.getVizFig1)
- * @param {string}   containerId  id của img-container div
- * @param {string}   label        mô tả ngắn cho spinner + alt text
- */
-async function _loadStaticFig(apiFn, containerId, label) {
-  ui.showSpinner(`Generating ${label}…`);
-  try {
-    const res = await apiFn();
-    renderImage(containerId, res.image, label);
-  } catch (_) { /* toast shown by api._fetch */ } finally { ui.hideSpinner(); }
-}
-
-// ── Static figures (fig1, fig4, fig6, fig9) ───────────────────────────────────
-
-async function loadFig1() {
-  await _loadStaticFig(api.getVizFig1, 'fig1-container', 'Fig. 1 – Pipeline Framework');
-}
-
-async function loadFig4() {
-  await _loadStaticFig(api.getVizFig4, 'fig4-container', 'Fig. 4 – Scaling Flowchart');
-}
-
-async function loadFig6() {
-  await _loadStaticFig(api.getVizFig6, 'fig6-container', 'Fig. 6 – db4 Wavelet Functions');
-}
-
-async function loadFig9() {
-  await _loadStaticFig(api.getVizFig9, 'fig9-container', 'Fig. 9 – Level-1 Decomposition');
-}
-
-// ── Data-dependent figures (ticker + currency) ────────────────────────────────
-
-async function loadFig2() {
-  const ticker   = sel('fig2-ticker');
-  const currency = sel('fig2-currency');
-  ui.showSpinner('Generating Fig. 2…');
-  try {
-    const res = await api.getVizFig2(ticker, currency);
-    renderImage('fig2-container', res.image, 'Fig. 2 – Deviation Scatter');
-  } catch (_) {} finally { ui.hideSpinner(); }
-}
-
-async function loadFig3() {
-  const ticker   = sel('fig3-ticker');
-  const currency = sel('fig3-currency');
-  ui.showSpinner('Generating Fig. 3…');
-  try {
-    const res = await api.getVizFig3(ticker, currency);
-    renderImage('fig3-container', res.image, 'Fig. 3 – Feature Distributions');
-  } catch (_) {} finally { ui.hideSpinner(); }
-}
-
-async function loadFig5() {
-  const ticker   = sel('fig5-ticker');
-  const currency = sel('fig5-currency');
-  ui.showSpinner('Generating Fig. 5…');
-  try {
-    const res = await api.getVizFig5(ticker, currency);
-    renderImage('fig5-container', res.image, 'Fig. 5 – Wavelet Decomposition');
-  } catch (_) {} finally { ui.hideSpinner(); }
-}
-
-async function loadFig7() {
-  const ticker   = sel('fig7-ticker');
-  const currency = sel('fig7-currency');
-  ui.showSpinner('Generating Fig. 7…');
-  try {
-    const res = await api.getVizFig7(ticker, currency);
-    renderImage('fig7-container', res.image, 'Fig. 7 – Approx Coefficients (A1)');
-  } catch (_) {} finally { ui.hideSpinner(); }
-}
-
-async function loadFig8() {
-  const ticker   = sel('fig8-ticker');
-  const currency = sel('fig8-currency');
-  ui.showSpinner('Generating Fig. 8…');
-  try {
-    const res = await api.getVizFig8(ticker, currency);
-    renderImage('fig8-container', res.image, 'Fig. 8 – Detail Coefficients (D1)');
-  } catch (_) {} finally { ui.hideSpinner(); }
-}
-
-// ── Fig. 10 — Correlation Matrix (ticker + currency + wavelet) ────────────────
-
-async function loadFig10() {
-  const ticker   = sel('fig10-ticker');
-  const currency = sel('fig10-currency');
-  const wavelet  = sel('fig10-wavelet') === 'true';
-  ui.showSpinner('Generating Fig. 10…');
-  try {
-    const res = await api.getVizFig10(ticker, currency, wavelet);
-    renderImage('fig10-container', res.image, 'Fig. 10 – Correlation Matrix');
-  } catch (_) {} finally { ui.hideSpinner(); }
-}
-
-// ── Fig. 11 — MSE Comparison Bar Chart ────────────────────────────────────────
-
-async function loadFig11() {
-  const ticker   = sel('fig11-ticker');
-  const currency = sel('fig11-currency');
-  ui.showSpinner('Generating Fig. 11…');
-  try {
-    const res = await api.getVizFig11(ticker, currency);
-    renderImage('fig11-container', res.image, 'Fig. 11 MSE comparison');
-  } catch (_) { /* toast */ } finally { ui.hideSpinner(); }
-}
-
-// ── Walk-Forward Stability ─────────────────────────────────────────────────────
-// Gọi /api/viz/walkforward → trả về base64 image, render vào img-container.
-// Params: ticker, currency, task (regression|classification), metric, wavelet.
-
-async function loadWf() {
-  const ticker   = sel('wf-ticker');
-  const currency = sel('wf-currency');
-  const task     = sel('wf-task');
-  const metric   = sel('wf-metric');
-  const wavelet  = sel('wf-wavelet') === 'true';
-  ui.showSpinner('Generating Walk-Forward chart…');
-  try {
-    const res = await api.getVizWalkforward(ticker, currency, task, metric, wavelet);
-    renderImage('wf-img-container', res.image, `Walk-Forward – ${metric} per Fold`);
-  } catch (_) { /* toast shown by api._fetch */ } finally { ui.hideSpinner(); }
-}
-
-
-// =============================================================================
-// EVENT LISTENERS — attach all button clicks
+// EVENT LISTENERS
 // =============================================================================
 
 function attachEventListeners() {
@@ -848,91 +684,50 @@ function attachEventListeners() {
 
   // Navigation
   document.querySelectorAll('.nav-item').forEach(item => {
-    item.addEventListener('click', (e) => {
-      e.preventDefault();
+    item.addEventListener('click', () => {
       switchSection(item.dataset.section);
+      // Auto-load static content when entering pipeline section
+      if (item.dataset.section === 'pipeline') loadPipelineOverview();
     });
   });
 
-  // Data section
-  on('btn-refresh-status',  loadDataStatus);
-  on('btn-load-raw',        loadRawData);
-  on('btn-load-features',   loadFeatures);
-  on('btn-load-deviation',  loadDeviationPlot);
-  on('btn-preprocess',      triggerPreprocess);
+  // Section 1: Data
+  on('btn-load-data', loadData);
 
-  // Experiments section
-  on('btn-refresh-matrix',  loadExperimentMatrix);
-  on('btn-run-experiment',  submitRunExperiment);
-  on('btn-run-hpo',         submitRunHPO);
-  document.getElementById('matrix-task-filter')
-    ?.addEventListener('change', loadExperimentMatrix);
+  // Section 2: Pipeline
+  on('btn-load-arch', loadArchitecture);
 
-  // Regression section
+  // Section 3: Regression
   on('btn-load-regression', loadRegression);
-  on('btn-load-pred-chart', loadPredChart);
-  on('btn-load-loss',       loadLossCurves);
 
-  // Classification section
+  // Section 4: Classification
   on('btn-load-classification', loadClassification);
 
-  // Trading section
+  // Section 5: Trading
   on('btn-load-trading', loadTrading);
-  on('btn-load-trading-cumret', loadTradingCumRet);
 
-  // Figures section — fig1–fig10 (static + data-dependent)
-  on('btn-fig1',  loadFig1);
-  on('btn-fig2',  loadFig2);
-  on('btn-fig3',  loadFig3);
-  on('btn-fig4',  loadFig4);
-  on('btn-fig5',  loadFig5);
-  on('btn-fig6',  loadFig6);
-  on('btn-fig7',  loadFig7);
-  on('btn-fig8',  loadFig8);
-  on('btn-fig9',  loadFig9);
-  on('btn-fig10', loadFig10);
-  // Figures section — fig11, vnd-usd, walk-forward
-  on('btn-load-fig11',   loadFig11);
-  on('btn-load-wf',      loadWf);
-
-  // Enable sort on static tables
-  attachTableSort('raw-data-table');
-  attachTableSort('trading-table');
+  // Trading wavelet tabs
+  document.getElementById('trade-tab-wave')  ?.addEventListener('click', () => _switchTradeTab(true));
+  document.getElementById('trade-tab-nowave')?.addEventListener('click', () => _switchTradeTab(false));
 }
 
-
 // =============================================================================
-// INIT — DOMContentLoaded
+// INIT
 // =============================================================================
 
 document.addEventListener('DOMContentLoaded', () => {
-  // Bind namespace shortcuts after all scripts are loaded
-  api    = window.VNSP?.api;
-  ui     = window.VNSP?.ui;
-  charts = window.VNSP?.charts;
+  api    = window.VNSP.api;
+  ui     = window.VNSP.ui;
+  charts = window.VNSP.charts;
 
-  if (!api || !ui || !charts) {
-    console.error('[main.js] VNSP.api / ui / charts not loaded. Check script order.');
-    return;
-  }
-
+  initModal();
   attachEventListeners();
-
-  // Initial startup: check API status + data file status
   checkApiStatus();
-  loadDataStatus();
+
+  // Auto-load data section on startup
+  loadData().catch(() => {});
 });
 
-
-// =============================================================================
-// NAMESPACE EXPORT
-// =============================================================================
-
-window.VNSP       = window.VNSP || {};
-window.VNSP.main  = {
-  switchSection,
-  handleCellClick,
-  loadExperimentMatrix,
-  // Expose helpers for inline onclick (matrix cells)
-  buildExpId,
-};
+// Export public methods
+window.VNSP = window.VNSP || {};
+window.VNSP.main = { switchSection, loadData, loadArchitecture, loadRegression, loadClassification, loadTrading };
