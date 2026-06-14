@@ -697,7 +697,7 @@ def get_confusion_matrix_viz(
 # EXTENDED: CUMULATIVE RETURNS (Trading Simulation)
 # =============================================================================
 
-@router.get("/trading-returns", summary="Cumulative return chart — 5 models vs Buy & Hold")
+@router.get("/trading-returns", summary="Cumulative return chart (Weekly) — 5 models vs Buy & Hold")
 def get_trading_returns_viz(
     ticker  : str  = Query("VCB"),
     currency: str  = Query("VND"),
@@ -705,10 +705,14 @@ def get_trading_returns_viz(
     wavelet : bool = Query(True),
 ) -> dict:
     """
-    Multi-line cumulative return chart: 5 models + Buy & Hold baseline.
+    Multi-line cumulative return chart (WEEKLY): 5 models + Buy & Hold baseline.
 
-    Load actual prices từ processed pkl (đã fix: pkl là dict, bắt buộc ["df"]).
-    Load predictions từ experiments/{exp_id}/fold_{n}/predictions.npz.
+    === CẬP NHẬT 2026-06 (Phương án D — Weekly, Phase 5) ===
+    Task B (classification) dự đoán hướng đi TUẦN kế tiếp (T2→T6), nên dùng
+    `simulate_trading_weekly()` — đọc key "dates" (=F_W) từ predictions.npz
+    và Close GỐC của TOÀN BỘ df_full (không filter theo test period, vì
+    sample cuối cần Close(F_{W+1}) có thể nằm ngoài test_end).
+    X-axis: F_W (ngày quyết định trade, mỗi điểm = 1 tuần).
 
     Returns:
         {"image": "data:image/png;base64,...",
@@ -717,12 +721,13 @@ def get_trading_returns_viz(
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
+    import matplotlib.dates as mdates
     import pandas as pd
 
     _validate_ticker(ticker)
     _validate_currency(currency)
 
-    from app.services.trading_service import simulate_trading
+    from app.services.trading_service import simulate_trading_weekly
     from app.services.viz_service import DARK_RC, MODEL_PALETTE
 
     cond     = "wavelet" if wavelet else "nowave"
@@ -731,16 +736,16 @@ def get_trading_returns_viz(
         raise HTTPException(status_code=400,
                             detail=f"fold_idx={fold_idx} không hợp lệ.")
 
-    test_start = pd.Timestamp(fold_def["test_start"])
-    test_end   = pd.Timestamp(fold_def["test_end"])
-
-    # Load pkl — FIXED: pkl là dict {"df": ..., ...}
+    # Load pkl — TOÀN BỘ df_full (không filter test period), cần cho
+    # Close(F_{W+1}) của sample cuối (có thể vượt test_end).
     df_full, _ = _load_pkl(ticker, currency, use_wavelet=wavelet)
+    if not isinstance(df_full.index, pd.DatetimeIndex):
+        df_full = df_full.copy()
+        df_full.index = pd.DatetimeIndex(df_full.index)
+    df_full = df_full.sort_index()
+    close_series = df_full["Close"].astype(float)
 
-    df_test   = df_full[(df_full.index >= test_start) & (df_full.index <= test_end)]
-    close_arr = df_test["Close"].values.astype(float)
-
-    if len(close_arr) < 5:
+    if len(close_series) < 5:
         raise HTTPException(status_code=404,
                             detail="Không đủ dữ liệu giá để tạo chart.")
 
@@ -756,26 +761,33 @@ def get_trading_returns_viz(
 
             try:
                 raw_npz = np.load(str(npz_path), allow_pickle=False)
-                y_pred  = raw_npz["y_pred"].flatten().astype(int)
+                if "dates" not in raw_npz.files:
+                    # predictions.npz cũ (daily, trước Phase 2) — bỏ qua model này
+                    logger.warning(
+                        "[trading-returns] '%s' thiếu key 'dates' "
+                        "(predictions.npz cũ — cần chạy lại Task B weekly).",
+                        npz_path,
+                    )
+                    continue
+                y_pred    = raw_npz["y_pred"].flatten().astype(int)
+                f_w_dates = pd.DatetimeIndex(raw_npz["dates"])
             except Exception as exc:
                 logger.warning("Không load được %s: %s", npz_path, exc)
                 continue
 
-            n_pred = len(y_pred)
-            T      = len(close_arr)
-            if n_pred >= T:
-                # seq_len suy ra từ độ dài
+            try:
+                trade_df = simulate_trading_weekly(y_pred, f_w_dates.values, close_series)
+            except Exception as exc:
+                logger.warning(
+                    "[trading-returns] Lỗi simulate weekly (model=%s): %s", model_name, exc
+                )
                 continue
 
-            seq_len    = T - n_pred
-            act_prices = close_arr[seq_len - 1:]          # shape (N+1,)
-            dates      = df_test.index[seq_len - 1: seq_len - 1 + n_pred]
+            color = MODEL_PALETTE[i % len(MODEL_PALETTE)]
 
-            trade_df = simulate_trading(y_pred, act_prices, dates=dates.values)
-            color    = MODEL_PALETTE[i % len(MODEL_PALETTE)]
-
+            # X-axis = F_W (ngày quyết định trade, weekly)
             ax.plot(
-                range(len(trade_df)),
+                trade_df["Date"],
                 (trade_df["Strategy_Cumulative"] - 1) * 100,
                 label=model_name, color=color, linewidth=1.8,
             )
@@ -783,7 +795,7 @@ def get_trading_returns_viz(
             # Buy & Hold — vẽ một lần dựa trên model đầu tiên thành công
             if not buyhold_plotted:
                 ax.plot(
-                    range(len(trade_df)),
+                    trade_df["Date"],
                     (trade_df["BuyHold_Cumulative"] - 1) * 100,
                     label="Buy & Hold", color="#78909c", linewidth=2.0,
                     linestyle="--", alpha=0.85,
@@ -792,13 +804,16 @@ def get_trading_returns_viz(
 
         ax.axhline(y=0, color="#444466", linewidth=0.8, linestyle=":")
         ax.set_title(
-            f"Cumulative Returns — {ticker} ({currency}) | {cond} | Fold {fold_idx}",
+            f"Cumulative Returns (Weekly) — {ticker} ({currency}) | {cond} | Fold {fold_idx}",
             fontsize=13,
         )
-        ax.set_xlabel("Trading Day Index", fontsize=11)
+        ax.set_xlabel("Date (F_W — weekly decision date)", fontsize=11)
         ax.set_ylabel("Cumulative Return (%)", fontsize=11)
         ax.legend(fontsize=10, loc="upper left")
         ax.grid(True, alpha=0.3)
+        ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m"))
+        ax.xaxis.set_major_locator(mdates.MonthLocator(interval=3))
+        plt.setp(ax.xaxis.get_ticklabels(), rotation=30, ha="right", fontsize=8)
         plt.tight_layout()
 
     return {

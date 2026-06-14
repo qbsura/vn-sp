@@ -12,10 +12,17 @@ Tham chiếu:
   Li et al., Engineering Applications of AI, 165 (2026) 113390.
   Section 3.1: Sliding window sequences cho time-series modeling.
 
-Hai tasks song song — cùng sequences, khác target:
-  Task A (Regression)      : y = Close(t+1) scaled value
-  Task B (Classification)  : y = 1 nếu Close(t+1) > Close(t), else 0
-                             → dựa trên GIÁ GỐC (unscaled) để tránh bias từ scaling
+Hai tasks — KHÁC sequence builder, khác target:
+  Task A (Regression)      : build_sequences()        — daily, y = Close(t+1) scaled value
+  Task B (Classification)  : build_weekly_sequences()  — weekly (T2→T6, Phương án D)
+                             y_W = 1 nếu Close(F_{W+1}) > Close(F_W), else 0
+                             F_W = phiên giao dịch cuối cùng của tuần W (thường là T6).
+                             1 sample / tuần (không phải 1 sample / ngày).
+                             → dựa trên GIÁ GỐC (unscaled) để tránh bias từ scaling.
+
+  Lý do thay đổi (feedback giảng viên, 2026-06): Task B chuyển từ dự đoán
+  hướng đi ngày kế tiếp (t+1) sang dự đoán xu thế TUẦN kế tiếp, neo theo
+  lịch tuần Thứ 2 → Thứ 6 (không phải rolling 5-phiên). Task A không đổi.
 """
 
 import logging
@@ -57,7 +64,13 @@ def build_sequences(
       - Columns của df: [feature_1, ..., feature_k, Close]
         → X dùng feature_1..k, y dùng Close.
 
-    Classification target (Task B):
+    Lưu ý (2026-06): prepare_fold_data() chỉ gọi build_sequences() cho
+    task='regression' (Task A, daily t+1, không đổi). Task B (classification)
+    nay dùng build_weekly_sequences() — xem hàm đó để biết target mới
+    (weekly T2→T6). Nhánh task='classification' ở đây được giữ lại để
+    tương thích/tham khảo, không còn nằm trong pipeline chính.
+
+    Classification target (Task B) — LEGACY, daily t+1:
       y[i] = 1 nếu Close[i+seq_len] > Close[i+seq_len-1], else 0
       - Dùng original_close (unscaled) để tính direction, tránh distortion.
       - Nếu original_close=None: dùng scaled Close làm fallback
@@ -165,6 +178,164 @@ def build_sequences(
         )
 
     return X, y
+
+
+# =============================================================================
+# WEEKLY SEQUENCE BUILDER (Phương án D — Task B mới, thay thế daily t+1)
+# =============================================================================
+
+def build_weekly_sequences(
+    df: pd.DataFrame,
+    sequence_length: int,
+    target_col: str = TARGET_COL,
+    original_close: Optional[np.ndarray] = None,
+) -> tuple[np.ndarray, np.ndarray, pd.DatetimeIndex]:
+    """
+    Xây dựng sequences cho Task B — Weekly Direction Classification (T2→T6).
+
+    Bối cảnh (feedback giảng viên, 2026-06):
+      Thay vì dự đoán hướng đi của NGÀY kế tiếp (t+1), Task B mới dự đoán
+      hướng đi của TUẦN kế tiếp (T2→T6 theo lịch dương), 1 sample / tuần.
+
+    Định nghĩa "tuần" (F_W):
+      - Mỗi tuần W = nhóm các phiên giao dịch trong cùng 1 tuần ISO (T2-T6),
+        dùng pandas Period 'W-FRI' (tuần kết thúc vào Thứ 6) để group —
+        tự động xử lý các tuần thiếu phiên do nghỉ lễ (F_W = phiên cuối
+        cùng có dữ liệu trong tuần, không nhất thiết là Thứ 6).
+      - F_W = vị trí (index) của phiên giao dịch CUỐI CÙNG trong tuần W.
+
+    Sequence & target:
+      X_W = features[F_W - seq_len + 1 : F_W + 1]   → N ngày daily, kết thúc tại F_W
+      y_W = 1 nếu Close(F_{W+1}) > Close(F_W), else 0
+
+      - Close(F_W)      : đã biết tại thời điểm dự đoán (mốc tham chiếu).
+      - Close(F_{W+1})  : tương lai — đây là mục tiêu cần dự đoán.
+      - → KHÔNG leakage: input X_W và mốc tham chiếu Close(F_W) chỉ dùng
+        dữ liệu ≤ F_W; nhãn y_W hoàn toàn nằm ở tương lai so với F_W.
+      - Dùng original_close (giá GỐC, unscaled) để tính direction, giống
+        quy ước của build_sequences() — tránh distortion do scaling.
+
+    Tần suất: 1 sample / tuần (không phải 1 sample / ngày). Tuần cuối cùng
+    trong df bị bỏ qua (không có F_{W+1} để tính nhãn). Các tuần đầu không
+    đủ `sequence_length` ngày lịch sử trước F_W cũng bị bỏ qua.
+
+    Args:
+        df:              Scaled DataFrame, index=DatetimeIndex (daily).
+                         Phải có target_col và ít nhất 1 feature column khác.
+        sequence_length: Số ngày daily trong mỗi window (≥ 1).
+        target_col:      Tên cột target (default: 'Close').
+        original_close:  Array 1-D giá Close GỐC (unscaled), len == len(df).
+                         Nếu None → dùng scaled Close làm fallback.
+
+    Returns:
+        (X, y, dates)
+        - X: np.ndarray shape (N, sequence_length, n_features), dtype float32
+        - y: np.ndarray shape (N,), dtype float32 — 0.0 (DOWN) / 1.0 (UP)
+        - dates: pd.DatetimeIndex shape (N,) — ngày F_W (cuối tuần W,
+          thời điểm dự đoán được tạo ra cho tuần W+1)
+
+    Raises:
+        ValueError: Nếu df quá ngắn, không có feature columns, original_close
+                     sai length, ít hơn 2 tuần, hoặc không có sample hợp lệ
+                     nào (sequence_length quá lớn so với dữ liệu).
+    """
+    # ── Validate ──────────────────────────────────────────────────────────────
+    n = len(df)
+    if sequence_length < 1:
+        raise ValueError(f"sequence_length={sequence_length} phải >= 1.")
+    if target_col not in df.columns:
+        raise ValueError(f"target_col='{target_col}' không có trong df.columns={list(df.columns)}")
+
+    feature_cols = [c for c in df.columns if c != target_col]
+    if not feature_cols:
+        raise ValueError(
+            f"build_weekly_sequences: không có feature columns nào "
+            f"(chỉ có target_col='{target_col}')."
+        )
+
+    if original_close is not None:
+        original_close = np.asarray(original_close, dtype=np.float64)
+        if len(original_close) != n:
+            raise ValueError(
+                f"len(original_close)={len(original_close)} != len(df)={n}. "
+                "original_close phải có cùng length với df."
+            )
+
+    # ── Data extraction ───────────────────────────────────────────────────────
+    features = df[feature_cols].values.astype(np.float32)    # (n, n_features)
+    scaled_close = df[target_col].values.astype(np.float64)  # (n,)
+
+    close_for_direction = (
+        original_close if original_close is not None else scaled_close
+    )
+
+    # ── Xác định F_W: phiên giao dịch CUỐI CÙNG của mỗi tuần (T2-T6) ───────────
+    # 'W-FRI' = tuần kết thúc vào Thứ 6 → group đúng các phiên T2..T6 vào
+    # cùng 1 tuần (dữ liệu không có T7/CN nên không bị lệch anchor).
+    week_periods = df.index.to_period("W-FRI")
+    last_pos_per_week = (
+        pd.Series(np.arange(n), index=week_periods)
+        .groupby(level=0)
+        .max()
+        .sort_index()
+    )
+    f_positions = last_pos_per_week.to_numpy()
+    n_weeks = len(f_positions)
+
+    if n_weeks < 2:
+        raise ValueError(
+            f"build_weekly_sequences: chỉ có {n_weeks} tuần trong df, "
+            "cần ít nhất 2 tuần (tuần W và tuần W+1) để tạo 1 sample."
+        )
+
+    # ── Build sequences (1 sample / tuần) ──────────────────────────────────────
+    X_list: list[np.ndarray] = []
+    y_list: list[float] = []
+    date_list: list = []
+
+    for w in range(n_weeks - 1):  # tuần cuối không có W+1 → bỏ
+        f_w = int(f_positions[w])
+        f_w_next = int(f_positions[w + 1])
+
+        start = f_w - sequence_length + 1
+        if start < 0:
+            # Không đủ sequence_length ngày lịch sử trước F_W → bỏ qua tuần này
+            continue
+
+        X_list.append(features[start : f_w + 1])  # N ngày, kết thúc tại F_W
+        y_list.append(
+            float(close_for_direction[f_w_next] > close_for_direction[f_w])
+        )
+        date_list.append(df.index[f_w])
+
+    if not X_list:
+        raise ValueError(
+            f"build_weekly_sequences: không có sample hợp lệ nào "
+            f"(n_weeks={n_weeks}, sequence_length={sequence_length}). "
+            "df quá ngắn so với sequence_length."
+        )
+
+    X = np.stack(X_list).astype(np.float32)
+    y = np.array(y_list, dtype=np.float32)
+    dates = pd.DatetimeIndex(date_list)
+
+    # ── Logging ───────────────────────────────────────────────────────────────
+    n_samples = len(y)
+    logger.info(
+        f"[build_weekly_sequences] seq_len={sequence_length} | "
+        f"n_features={features.shape[1]} | n_weeks_total={n_weeks} | "
+        f"N_samples={n_samples} | X={X.shape} | y={y.shape}"
+    )
+
+    n_up = int(y.sum())
+    pct_up = 100.0 * n_up / n_samples
+    logger.info(
+        f"[build_weekly_sequences] Weekly direction balance: "
+        f"UP={n_up}/{n_samples} ({pct_up:.1f}%) | "
+        f"DOWN={n_samples - n_up}/{n_samples} ({100 - pct_up:.1f}%)"
+    )
+
+    return X, y, dates
 
 
 # =============================================================================
@@ -283,8 +454,11 @@ def prepare_fold_data(
           "train_dataset" : StockDataset — sequences cho training
           "test_dataset"  : StockDataset — sequences cho evaluation
           "scaler"        : FeatureScaler đã fit (dùng cho inverse_transform_target)
-          "train_dates"   : DatetimeIndex — dates ứng với y_train (ngày được predict)
-          "test_dates"    : DatetimeIndex — dates ứng với y_test (ngày được predict)
+          "train_dates"   : DatetimeIndex — ngày ứng với mỗi y_train
+                            - Task A (regression): ngày được predict (t+1)
+                            - Task B (classification): ngày F_W — phiên cuối
+                              tuần W (thời điểm dự đoán được tạo ra cho tuần W+1)
+          "test_dates"    : DatetimeIndex — tương tự train_dates, cho test set
           "n_features"    : int — số input features
           "fold_id"       : int — fold ID (từ fold dict)
 
@@ -339,22 +513,31 @@ def prepare_fold_data(
     df_test_scaled = scaler.transform(df_test)
 
     # ── Build sequences ───────────────────────────────────────────────────────
-    # Classification: truyền original_close để tính direction từ giá thực
-    orig_train = orig_close_train if task == "classification" else None
-    orig_test  = orig_close_test  if task == "classification" else None
+    if task == "classification":
+        # Phương án D — Task B mới: Weekly Direction Classification (T2→T6).
+        #   X_W = N ngày daily kết thúc tại F_W (phiên cuối tuần W)
+        #   y_W = 1 nếu Close(F_{W+1}) > Close(F_W), dùng giá GỐC (unscaled)
+        #   1 sample / tuần — KHÔNG phải 1 sample / ngày như Task A.
+        #   dates trả về = F_W (ngày dự đoán được tạo ra, cho tuần W+1).
+        X_train, y_train, train_dates = build_weekly_sequences(
+            df_train_scaled, sequence_length, target_col, orig_close_train
+        )
+        X_test, y_test, test_dates = build_weekly_sequences(
+            df_test_scaled, sequence_length, target_col, orig_close_test
+        )
+    else:
+        # Task A (Regression): daily t+1 — không đổi.
+        X_train, y_train = build_sequences(
+            df_train_scaled, sequence_length, target_col, task, None
+        )
+        X_test, y_test = build_sequences(
+            df_test_scaled, sequence_length, target_col, task, None
+        )
 
-    X_train, y_train = build_sequences(
-        df_train_scaled, sequence_length, target_col, task, orig_train
-    )
-    X_test, y_test = build_sequences(
-        df_test_scaled, sequence_length, target_col, task, orig_test
-    )
-
-    # ── Prediction dates ──────────────────────────────────────────────────────
-    # Sequence i dự đoán ngày df.index[i + sequence_length]
-    # → dates[0] = ngày đầu tiên được predict (sau window đầu tiên)
-    train_dates = df_train.index[sequence_length:]
-    test_dates  = df_test.index[sequence_length:]
+        # Sequence i dự đoán ngày df.index[i + sequence_length]
+        # → dates[0] = ngày đầu tiên được predict (sau window đầu tiên)
+        train_dates = df_train.index[sequence_length:]
+        test_dates  = df_test.index[sequence_length:]
 
     # ── Tạo PyTorch Datasets ──────────────────────────────────────────────────
     train_dataset = StockDataset(X_train, y_train, task=task)

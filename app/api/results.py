@@ -286,13 +286,17 @@ def get_predictions(
 # CLASSIFICATION REPORT  — Task 7.4
 # =============================================================================
 
-@router.get("/{exp_id}/classification-report", summary="Classification metrics per fold")
+@router.get("/{exp_id}/classification-report", summary="Classification metrics per fold (Weekly, T2-T6)")
 def get_classification_report(
     exp_id   : str,
     threshold: float = Query(0.5, ge=0.0, le=1.0, description="Probability threshold"),
 ) -> dict:
     """
     Tính và trả về Accuracy, Precision, Recall, F1, AUC-ROC cho từng fold.
+
+    GHI CHÚ (2026-06, Phương án D): Task B hiện dự đoán hướng đi TUẦN kế tiếp
+    (T2→T6), 1 sample/tuần — không phải hướng đi ngày kế tiếp như trước.
+    Cấu trúc response và cách tính metrics không đổi.
 
     Đọc từ predictions.npz (y_true, y_prob) và gọi compute_classification_metrics.
 
@@ -525,7 +529,7 @@ def get_roc_curve(
 # TRADING SIMULATION RESULTS
 # =============================================================================
 
-@router.get("/trading/{ticker}/{currency}", summary="Trading simulation results")
+@router.get("/trading/{ticker}/{currency}", summary="Trading simulation results (Weekly)")
 def get_trading_results(
     ticker  : str,
     currency: str,
@@ -533,7 +537,12 @@ def get_trading_results(
 ) -> dict:
     """
     Chạy trading simulation cho tất cả 5 models × 2 wavelet conditions.
-    Dùng predictions từ Task B (classification).
+    Dùng predictions từ Task B (classification, Weekly T2-T6).
+
+    GHI CHÚ (2026-06, Phương án D): mỗi sample = 1 tuần. Mua nếu model dự
+    đoán tuần kế tiếp UP (return = (Close(F_W+1)-Close(F_W))/Close(F_W)),
+    đứng ngoài nếu DOWN (no shorting). Sharpe Ratio annualize ×√52.
+    Cấu trúc response (field names) không đổi so với bản daily cũ.
 
     Returns:
         {"ticker": str, "currency": str, "fold_idx": int,

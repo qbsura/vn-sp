@@ -585,7 +585,9 @@ async function loadLossCurves() {
 
 
 // =============================================================================
-// SECTION: CLASSIFICATION
+// SECTION: CLASSIFICATION (Weekly, T2–T6 — Phương án D, 2026-06)
+// Mỗi sample = 1 tuần; y_pred dự đoán hướng đi của tuần KẾ TIẾP so với
+// Close cuối tuần hiện tại (không phải ngày kế tiếp như trước).
 // =============================================================================
 
 async function loadClassification() {
@@ -645,13 +647,16 @@ async function loadClassification() {
       });
     }
 
-    ui.showToast('success', 'Classification results loaded');
+    ui.showToast('success', 'Classification results loaded', 'Weekly (T2–T6) direction');
   } catch (_) { /* toast */ } finally { ui.hideSpinner(); }
 }
 
 
 // =============================================================================
-// SECTION: TRADING
+// SECTION: TRADING (Weekly — Phương án D, 2026-06)
+// run_trading_simulation_all_models() đã viết lại weekly: return tính theo
+// Close(F_W+1)/Close(F_W) mỗi tuần; Sharpe annualize ×√52. Cấu trúc response
+// (field names) không đổi nên không cần sửa renderTableBody/renderCumulativeReturn.
 // =============================================================================
 
 async function loadTrading() {
@@ -684,8 +689,24 @@ async function loadTrading() {
     ]);
 
     attachTableSort('trading-table');
-    ui.showToast('success', 'Trading results loaded', `${rows.length} model variants`);
+    ui.showToast('success', 'Trading results loaded (weekly)', `${rows.length} model variants`);
   } catch (_) { /* toast */ } finally { ui.hideSpinner(); }
+}
+
+// ── Cumulative Return per Model — Weekly, annotated chart (Phase 5) ─────────────
+// Gọi /api/viz/fig-cumulative-return → fig_cumulative_return() (đã viết lại
+// dùng simulate_trading_weekly() ở Phase 5). Ảnh có sẵn stats panel
+// (Sharpe / Max DD / Win Rate per model) nên không cần render thêm bảng.
+async function loadTradingCumRet() {
+  const ticker   = sel('trade-ticker');
+  const currency = sel('trade-currency');
+  const fold     = parseInt(sel('trade-fold'), 10) || 3;
+  const wavelet  = sel('trade-wavelet') === 'true';
+  ui.showSpinner('Generating Cumulative Return chart…');
+  try {
+    const res = await api.getVizFigCumulativeReturn(ticker, currency, fold, wavelet);
+    renderImage('trading-cumret-container', res.image, 'Cumulative Return per Model (Weekly)');
+  } catch (_) { /* toast shown by api._fetch */ } finally { ui.hideSpinner(); }
 }
 
 
@@ -881,6 +902,7 @@ function attachEventListeners() {
 
   // Trading section
   on('btn-load-trading', loadTrading);
+  on('btn-load-trading-cumret', loadTradingCumRet);
 
   // Figures section — fig1–fig10 (static + data-dependent)
   on('btn-fig1',  loadFig1);

@@ -1537,11 +1537,18 @@ def fig_cumulative_return(
     save_path: Optional[str] = None,
 ) -> plt.Figure:
     """
-    Multi-line chart: Cumulative returns của 5 models + Buy&Hold baseline.
+    Multi-line chart: Cumulative returns (WEEKLY) của 5 models + Buy&Hold baseline.
 
-    X-axis: date (từ df_test.index).
+    === CẬP NHẬT 2026-06 (Phương án D — Weekly, Phase 5) ===
+    Task B (classification) đã chuyển sang dự đoán hướng đi TUẦN kế tiếp
+    (T2→T6), nên simulation ở đây dùng `simulate_trading_weekly()` thay vì
+    `simulate_trading()` (daily) — đọc key "dates" (=F_W) từ predictions.npz
+    và Close GỐC của TOÀN BỘ df_full (không filter theo test period, vì
+    sample cuối cần Close(F_{W+1}) có thể nằm ngoài test_end).
+
+    X-axis: F_W (ngày quyết định trade, mỗi điểm = 1 tuần).
     Y-axis: Cumulative return (%).
-    Annotation: Sharpe Ratio và Max Drawdown per model.
+    Annotation: Sharpe Ratio (annualize ×√52) và Max Drawdown per model.
 
     Args:
         ticker, currency: Xác định dataset.
@@ -1556,29 +1563,31 @@ def fig_cumulative_return(
     from pathlib import Path
     import matplotlib.dates as mdates
     from app.config import MODELS, PATHS, FOLDS
-    from app.services.trading_service import simulate_trading, compute_trading_metrics
+    from app.services.trading_service import (
+        simulate_trading_weekly, compute_trading_metrics, TRADING_WEEKS_PER_YEAR,
+    )
 
     cond     = "wavelet" if wavelet else "nowave"
     fold_def = next((f for f in FOLDS if f["fold_id"] == fold_idx), None)
     if fold_def is None:
         raise ValueError(f"fold_idx={fold_idx} không hợp lệ.")
 
-    test_start = pd.Timestamp(fold_def["test_start"])
-    test_end   = pd.Timestamp(fold_def["test_end"])
-
-    # Load processed pkl (dict format)
+    # Load processed pkl (dict format) — dùng TOÀN BỘ df_full, không chỉ test
+    # period, để có Close(F_{W+1}) cho sample cuối (có thể vượt test_end).
     pkl_path = Path(PATHS["processed"]) / f"{ticker}_{currency}_{cond}.pkl"
     if not pkl_path.exists():
         raise FileNotFoundError(f"Processed pkl không tồn tại: {pkl_path}")
     with open(pkl_path, "rb") as f:
         pkl_data = pickle.load(f)
-    df_full   = pkl_data["df"] if isinstance(pkl_data, dict) else pkl_data
-    df_test   = df_full[(df_full.index >= test_start) & (df_full.index <= test_end)]
-    close_arr = df_test["Close"].values.astype(float)
-    T         = len(close_arr)
+    df_full = pkl_data["df"] if isinstance(pkl_data, dict) else pkl_data
+    if not isinstance(df_full.index, pd.DatetimeIndex):
+        df_full = df_full.copy()
+        df_full.index = pd.DatetimeIndex(df_full.index)
+    df_full = df_full.sort_index()
 
-    if T < 5:
-        raise ValueError("Không đủ dữ liệu giá trong test period.")
+    close_series = df_full["Close"].astype(float)
+    if len(close_series) < 5:
+        raise ValueError("Không đủ dữ liệu giá trong processed pkl.")
 
     with plt.rc_context(DARK_RC):
         # ── Main chart + stats panel ───────────────────────────────────
@@ -1599,28 +1608,36 @@ def fig_cumulative_return(
                 continue
 
             try:
-                raw    = np.load(str(npz_path), allow_pickle=False)
-                y_pred = raw["y_pred"].flatten().astype(int)
+                raw = np.load(str(npz_path), allow_pickle=False)
+                if "dates" not in raw.files:
+                    # predictions.npz cũ (daily, trước Phase 2) — bỏ qua model này
+                    logger.warning(
+                        "[fig_cumulative_return] '%s' thiếu key 'dates' "
+                        "(predictions.npz cũ — cần chạy lại Task B weekly).",
+                        npz_path,
+                    )
+                    continue
+                y_pred    = raw["y_pred"].flatten().astype(int)
+                f_w_dates = pd.DatetimeIndex(raw["dates"])
             except Exception as exc:
                 logger.warning("Lỗi load %s: %s", npz_path, exc)
                 continue
 
-            n_pred = len(y_pred)
-            if n_pred >= T:
+            try:
+                trade_df  = simulate_trading_weekly(y_pred, f_w_dates.values, close_series)
+                trade_mtr = compute_trading_metrics(trade_df, periods_per_year=TRADING_WEEKS_PER_YEAR)
+            except Exception as exc:
+                logger.warning(
+                    "[fig_cumulative_return] Lỗi simulate weekly (model=%s): %s",
+                    model_name, exc,
+                )
                 continue
-
-            seq_len    = T - n_pred
-            act_prices = close_arr[seq_len - 1:]           # shape (n_pred + 1,)
-            dates_idx  = df_test.index[seq_len - 1: seq_len - 1 + n_pred]
-
-            trade_df  = simulate_trading(y_pred, act_prices, dates=dates_idx.values)
-            trade_mtr = compute_trading_metrics(trade_df)
 
             color = MODEL_PALETTE[i % len(MODEL_PALETTE)]
 
-            # Date-based X-axis
-            plot_dates  = trade_df.index if hasattr(trade_df.index, 'year') else dates_idx
-            strat_pct   = (trade_df["Strategy_Cumulative"] - 1) * 100
+            # X-axis = F_W (ngày quyết định trade, weekly)
+            plot_dates = trade_df["Date"]
+            strat_pct  = (trade_df["Strategy_Cumulative"] - 1) * 100
             ax_main.plot(plot_dates, strat_pct,
                          label=model_name, color=color,
                          linewidth=1.8, alpha=0.9)
@@ -1645,7 +1662,7 @@ def fig_cumulative_return(
 
         ax_main.axhline(y=0, color="#444466", linewidth=0.8, linestyle=":")
         ax_main.set_title(
-            f"Cumulative Returns — {ticker} ({currency}) | {cond} | Fold {fold_idx}",
+            f"Cumulative Returns (Weekly) — {ticker} ({currency}) | {cond} | Fold {fold_idx}",
             fontsize=13, fontweight="bold",
         )
         ax_main.set_ylabel("Cumulative Return (%)", fontsize=11)

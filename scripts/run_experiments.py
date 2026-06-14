@@ -10,6 +10,11 @@ Chạy:
   uv run python scripts/run_experiments.py --task regression --wavelet true
   uv run python scripts/run_experiments.py --fold 1               # chỉ fold 1
 
+  # Re-run Task B (classification) sau khi đổi target sang WEEKLY (T2-T6):
+  # --force-rerun để overwrite 120 kết quả classification daily cũ.
+  # Task A (regression) KHÔNG cần re-run.
+  uv run python scripts/run_experiments.py --task classification --force-rerun
+
 Lưu ý:
   - Chạy HPO trước (hpo_service.run_full_hpo) để có best_params.json.
   - Script này sẽ skip experiments đã có metrics.json (resume safe).
@@ -23,6 +28,7 @@ Prerequisites:
 import argparse
 import logging
 import sys
+from datetime import datetime
 from pathlib import Path
 
 # ── Add project root to path ──────────────────────────────────────────────────
@@ -32,11 +38,23 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from app.services.experiment_runner import run_all_experiments
 
 # ── Logging setup ─────────────────────────────────────────────────────────────
+# Ghi log ra CẢ console VÀ file (logs/run_experiments_<timestamp>.log) — đảm bảo
+# traceback đầy đủ của các experiment lỗi (logger.error(..., exc_info=True))
+# không bị mất khi terminal scroll qua / không capture output.
+LOG_DIR = PROJECT_ROOT / "logs"
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+LOG_FILE = LOG_DIR / f"run_experiments_{datetime.now():%Y%m%d_%H%M%S}.log"
+
 logging.basicConfig(
     level  = logging.INFO,
     format = "%(asctime)s | %(levelname)s | %(name)s | %(message)s",
     datefmt= "%H:%M:%S",
+    handlers=[
+        logging.StreamHandler(),                       # console (như cũ)
+        logging.FileHandler(LOG_FILE, encoding="utf-8"),  # file — lưu traceback
+    ],
 )
+print(f"[run_experiments] Log file: {LOG_FILE}")
 # Suppress noisy loggers
 logging.getLogger("optuna").setLevel(logging.WARNING)
 
@@ -70,6 +88,9 @@ Ví dụ:
   uv run python scripts/run_experiments.py \\
       --ticker VCB --currency VND --wavelet true \\
       --model BiLSTM --task regression --fold 1
+
+  # Re-run Task B (weekly classification, T2-T6) — overwrite kết quả cũ
+  uv run python scripts/run_experiments.py --task classification --force-rerun
         """,
     )
 
@@ -111,6 +132,15 @@ Ví dụ:
         default=None,
         help="Lọc theo fold index (1, 2, hoặc 3). None = cả 3 folds.",
     )
+    parser.add_argument(
+        "--force-rerun",
+        action="store_true",
+        help=(
+            "Bỏ qua resume-skip, LUÔN chạy lại và overwrite metrics.json/"
+            "predictions.npz/best_model.pt cũ. Dùng khi đổi target/logic "
+            "(ví dụ Task B chuyển sang weekly T2-T6)."
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -121,6 +151,7 @@ Ví dụ:
         model_filter    = args.model,
         task_filter     = args.task,
         fold_filter     = args.fold,
+        force_rerun     = args.force_rerun,
     )
 
     print(f"\nDone. {len(results)} experiments completed.")

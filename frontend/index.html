@@ -59,13 +59,13 @@
         <li>
           <a href="#" class="nav-item" data-section="classification">
             <span class="nav-icon">⬡</span>
-            <span class="nav-label">Results — Classification</span>
+            <span class="nav-label">Results — Classification (Weekly)</span>
           </a>
         </li>
         <li>
           <a href="#" class="nav-item" data-section="trading">
             <span class="nav-icon">⬡</span>
-            <span class="nav-label">Trading Simulation</span>
+            <span class="nav-label">Trading Simulation (Weekly)</span>
           </a>
         </li>
         <li>
@@ -637,8 +637,8 @@
       <section class="content-section" id="section-classification" data-section="classification">
 
         <div class="section-header">
-          <h2 class="section-title">Results — Classification</h2>
-          <p class="section-desc">Direction prediction: Accuracy, F1, AUC-ROC. Confusion matrix và ROC curves.</p>
+          <h2 class="section-title">Results — Classification (Weekly, T2–T6)</h2>
+          <p class="section-desc">Direction prediction theo <strong>TUẦN</strong> (T2→T6, không phải ngày kế tiếp): mỗi sample dự đoán Close(tuần sau) so với Close(cuối tuần này). Metrics: Accuracy, F1, AUC-ROC. Confusion matrix và ROC curves.</p>
         </div>
 
         <!-- Filter bar -->
@@ -773,8 +773,8 @@
       <section class="content-section" id="section-trading" data-section="trading">
 
         <div class="section-header">
-          <h2 class="section-title">Trading Simulation</h2>
-          <p class="section-desc">Cumulative Return vs Buy-and-Hold · Sharpe Ratio · Max Drawdown · Win Rate.</p>
+          <h2 class="section-title">Trading Simulation (Weekly)</h2>
+          <p class="section-desc">Chiến lược: mua nếu model dự đoán tuần kế tiếp UP, giữ tiền nếu DOWN (no shorting). Cumulative Return vs Buy-and-Hold · Sharpe Ratio (annualized ×√52) · Max Drawdown · Win Rate — tính theo tuần (T2–T6).</p>
         </div>
 
         <!-- Filter bar -->
@@ -801,13 +801,20 @@
               <option value="2">Fold 2 (2020)</option>
             </select>
           </div>
+          <div class="control-group">
+            <label class="control-label">Wavelet</label>
+            <select class="select" id="trade-wavelet">
+              <option value="true">With Wavelet</option>
+              <option value="false">No Wavelet</option>
+            </select>
+          </div>
           <button class="btn btn-primary" id="btn-load-trading">Load Trading Results</button>
         </div>
 
         <!-- Cumulative returns chart -->
         <div class="card">
           <div class="card-header">
-            <span class="card-title">Cumulative Returns vs Buy-and-Hold</span>
+            <span class="card-title">Cumulative Returns vs Buy-and-Hold (Weekly)</span>
           </div>
           <div class="card-body">
             <canvas id="chart-trading-returns" class="chart-canvas" aria-label="Cumulative trading returns"></canvas>
@@ -831,7 +838,7 @@
                     <th data-col="buyhold_return" class="sortable-col">Buy&Hold <span class="sort-icon">↕</span></th>
                     <th data-col="sharpe_ratio" class="sortable-col">Sharpe <span class="sort-icon">↕</span></th>
                     <th data-col="max_drawdown" class="sortable-col">Max DD <span class="sort-icon">↕</span></th>
-                    <th data-col="win_rate" class="sortable-col">Win Rate <span class="sort-icon">↕</span></th>
+                    <th data-col="win_rate" class="sortable-col">Win Rate (tuần) <span class="sort-icon">↕</span></th>
                   </tr>
                 </thead>
                 <tbody id="trading-tbody">
@@ -843,6 +850,24 @@
         </div>
 
       </section><!-- /section-trading -->
+
+      <!-- Cumulative Return per model (Weekly) — annotated chart from viz_service.fig_cumulative_return,
+           dùng simulate_trading_weekly(); Sharpe/Max DD/Win Rate hiển thị trong stats panel của ảnh. -->
+      <section class="content-section" id="section-trading-cumret-wrapper" data-section="trading" style="margin-top: 1.5rem;">
+        <div class="card">
+          <div class="card-header">
+            <span class="card-title">Cumulative Return per Model — Weekly (with Sharpe / Max DD)</span>
+          </div>
+          <div class="card-body">
+            <div class="controls-row" style="margin-bottom: 0.75rem;">
+              <button class="btn btn-outline" id="btn-load-trading-cumret">Generate Chart</button>
+            </div>
+            <div class="img-container" id="trading-cumret-container">
+              <div class="chart-placeholder">Click "Generate Chart" (dùng Ticker/Currency/Fold/Wavelet ở trên)</div>
+            </div>
+          </div>
+        </div>
+      </section>
 
 
       <!-- ======================================================

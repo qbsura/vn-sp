@@ -25,10 +25,23 @@ Directory structure:
 
 Resume capability:
   run_all_experiments() skip nếu metrics.json đã tồn tại.
+  → force_rerun=True để bỏ qua skip-check (dùng khi re-run Task B sau khi
+    đổi target sang weekly — xem ghi chú "Task B WEEKLY" dưới đây).
+
+Task B — WEEKLY CLASSIFICATION (Phương án D, 2026-06):
+  Theo feedback giảng viên, Task B chuyển từ "hướng đi ngày kế tiếp (t+1)"
+  sang "hướng đi TUẦN kế tiếp" (T2→T6 theo lịch, 1 sample/tuần). Thay đổi
+  này nằm trong dataset_builder.build_weekly_sequences() / prepare_fold_data()
+  — run_single_experiment() KHÔNG cần sửa logic train/eval, chỉ:
+    (a) predictions.npz lưu thêm "dates" (F_W) — dùng cho Task C (trading).
+    (b) run_all_experiments(task_filter="classification", force_rerun=True)
+        để overwrite 120 kết quả classification cũ (đã tính theo t+1 daily).
+  Task A (regression) HOÀN TOÀN KHÔNG ĐỔI — không cần re-run.
 
 HPO policy:
   BiLSTM chạy HPO riêng → best_params.json
   DNN/RNN/GRU/LSTM load chung best_params của BiLSTM (cùng fold, cùng condition)
+  Task B weekly TÁI SỬ DỤNG best_params này (không HPO riêng).
 
 Tham chiếu:
   Li et al., Engineering Applications of AI, 165 (2026) 113390.
@@ -43,6 +56,7 @@ import logging
 import os
 import pickle
 import time
+import traceback
 from itertools import product
 from pathlib import Path
 from typing import Optional
@@ -101,8 +115,10 @@ def compute_metrics(
       MSE, MAE, RMSE, MAPE (%), R²
       Tất cả tính trên giá thực (đã inverse transform).
 
-    Classification metrics (Task B):
+    Classification metrics (Task B — WEEKLY, T2→T6):
       Accuracy, Precision, Recall, F1 (binary), AUC-ROC.
+      N (số sample) nay là số TUẦN trong test set (~48-156/fold), không
+      phải số ngày. Công thức metric không đổi (frequency-agnostic).
 
     Args:
         y_pred: Predicted values, shape (N,).
@@ -379,6 +395,14 @@ def run_single_experiment(
     pred_save = {"y_pred": preds["y_pred"], "y_true": preds["y_true"]}
     if "y_prob" in preds:
         pred_save["y_prob"] = preds["y_prob"]
+
+    if task == "classification":
+        # Task B (weekly): mỗi prediction ứng với F_W (phiên cuối tuần W,
+        # thời điểm dự đoán cho tuần W+1). Lưu lại để Task C (trading
+        # simulation weekly, Phase 3) tính return theo đúng mốc thời gian
+        # mà KHÔNG cần train lại.
+        pred_save["dates"] = fold_data["test_dates"].values.astype("datetime64[ns]")
+
     np.savez_compressed(str(out_dir / "predictions.npz"), **pred_save)
 
     logger.info("[%s] Saved → %s", label, out_dir)
@@ -397,6 +421,7 @@ def run_all_experiments(
     model_filter     : Optional[str]  = None,
     task_filter      : Optional[str]  = None,
     fold_filter      : Optional[int]  = None,
+    force_rerun      : bool           = False,
 ) -> list[dict]:
     """
     Chạy toàn bộ experiment matrix với resume capability.
@@ -405,6 +430,8 @@ def run_all_experiments(
       2 tickers × 2 currencies × 2 wavelet × 5 models × 2 tasks × 3 folds = 240 runs
 
     Resume: Skip experiment nếu experiments/{exp_id}/fold_{i}/metrics.json đã tồn tại.
+      force_rerun=True → bỏ qua skip-check, LUÔN chạy lại và overwrite
+      metrics.json/predictions.npz/best_model.pt cũ.
 
     Filter arguments (None = không lọc):
       ticker_filter:   "VCB" hoặc "VIC"
@@ -413,6 +440,9 @@ def run_all_experiments(
       model_filter:    "DNN", "RNN", "GRU", "LSTM", "BiLSTM"
       task_filter:     "regression" hoặc "classification"
       fold_filter:     1, 2, hoặc 3
+      force_rerun:     True → re-run dù đã có metrics.json (dùng khi đổi
+                       target/logic, ví dụ Task B chuyển sang weekly — xem
+                       module docstring "Task B — WEEKLY CLASSIFICATION").
 
     Time estimation:
       Sau mỗi experiment hoàn thành, tính rolling average time và ước tính
@@ -420,7 +450,7 @@ def run_all_experiments(
 
     Returns:
         list[dict] — kết quả của tất cả experiments đã chạy thành công.
-        Experiments bị skip (đã tồn tại) không được include.
+        Experiments bị skip (đã tồn tại, force_rerun=False) không được include.
     """
     # ── Build filtered experiment list ────────────────────────────────────────
     tickers    = [ticker_filter]    if ticker_filter    else TICKERS
@@ -449,6 +479,7 @@ def run_all_experiments(
     print(f"{'='*72}\n")
 
     results    : list[dict] = []
+    failed     : list[dict] = []   # chi tiết các experiment lỗi — để debug sau
     skipped    : int        = 0
     errors     : int        = 0
     elapsed_log: list[float]= []   # thời gian mỗi run để estimate remaining
@@ -463,11 +494,24 @@ def run_all_experiments(
 
         # ── Check resume ──────────────────────────────────────────────────────
         metrics_path = EXPERIMENTS_DIR / exp_id / f"fold_{fold_idx}" / "metrics.json"
-        if metrics_path.exists():
+        if metrics_path.exists() and not force_rerun:
             skipped += 1
             logger.debug("%s — SKIP (metrics.json exists)", label)
             print(f"  {label} — ⏭  SKIP")
             continue
+
+        # ── Force-rerun: dọn sạch kết quả CŨ trước khi chạy lại ─────────────────
+        # Nếu không xoá: trường hợp experiment lỗi TRƯỚC bước ghi metrics.json
+        # (vd. lỗi ở load data/build model/training) sẽ để lại metrics.json
+        # CŨ (ví dụ từ Task B daily trước khi đổi sang weekly) — lần resume
+        # sau (không force_rerun) sẽ hiểu nhầm "đã có kết quả" và SKIP, khiến
+        # experiment lỗi này không bao giờ được retry và không hiện lỗi nữa.
+        if force_rerun:
+            exp_dir = EXPERIMENTS_DIR / exp_id / f"fold_{fold_idx}"
+            for fname in ("metrics.json", "predictions.npz", "best_model.pt"):
+                fpath = exp_dir / fname
+                if fpath.exists():
+                    fpath.unlink()
 
         # ── Time estimate ──────────────────────────────────────────────────────
         if elapsed_log:
@@ -514,13 +558,27 @@ def run_all_experiments(
             errors += 1
             logger.error("[run_all_experiments] SKIP (not found): %s | %s", label, exc)
             print(f"  {label} — ⚠️  SKIP (best_params not found — run HPO first)")
+            failed.append({
+                "exp_id"    : exp_id,
+                "fold_idx"  : fold_idx,
+                "error_type": "FileNotFoundError",
+                "error_msg" : str(exc),
+                "traceback" : traceback.format_exc(),
+            })
 
         except Exception as exc:
             run_elapsed = time.time() - t_run_start
             elapsed_log.append(run_elapsed)
             errors += 1
             logger.error("[run_all_experiments] ERROR: %s | %s", label, exc, exc_info=True)
-            print(f"  {label} — ❌  ERROR: {exc}")
+            print(f"  {label} — ❌  ERROR: {type(exc).__name__}: {exc}")
+            failed.append({
+                "exp_id"    : exp_id,
+                "fold_idx"  : fold_idx,
+                "error_type": type(exc).__name__,
+                "error_msg" : str(exc),
+                "traceback" : traceback.format_exc(),
+            })
 
     # ── Summary ───────────────────────────────────────────────────────────────
     total_elapsed = time.time() - global_start
@@ -533,6 +591,26 @@ def run_all_experiments(
     print(f"  ❌  {errors} errors")
     print(f"  ⏱  Tổng thời gian: {_format_seconds(total_elapsed)}")
     print(f"{'='*72}\n")
+
+    # ── Chi tiết lỗi (nếu có) ───────────────────────────────────────────────────
+    # In tóm tắt từng lỗi ra console + lưu full traceback ra file JSON để debug
+    # (resume: experiment lỗi KHÔNG có metrics.json → lần chạy sau sẽ tự retry).
+    if failed:
+        print(f"{'='*72}")
+        print(f"CHI TIẾT {len(failed)} LỖI:")
+        print(f"{'='*72}")
+        for f_info in failed:
+            print(
+                f"  • {f_info['exp_id']} | fold {f_info['fold_idx']} | "
+                f"{f_info['error_type']}: {f_info['error_msg']}"
+            )
+
+        EXPERIMENTS_DIR.mkdir(parents=True, exist_ok=True)
+        err_log_path = EXPERIMENTS_DIR / "_last_errors.json"
+        with open(err_log_path, "w", encoding="utf-8") as ef:
+            json.dump(failed, ef, indent=2, ensure_ascii=False)
+        print(f"\n  → Traceback đầy đủ đã lưu tại: {err_log_path}")
+        print(f"{'='*72}\n")
 
     return results
 

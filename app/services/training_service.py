@@ -327,11 +327,18 @@ def train_model(
     # ── DataLoaders ───────────────────────────────────────────────────────────
     # Train: shuffle=True để tránh overfitting thứ tự
     # Val:   shuffle=False để đánh giá nhất quán
+    # drop_last=True để tránh batch cuối chỉ có 1 sample (crash BatchNorm1d
+    # với lỗi "Expected more than 1 value per channel when training").
+    # Edge case: nếu train_dataset nhỏ hơn batch_size (0 full batches),
+    # KHÔNG drop_last (nếu không sẽ không còn batch nào để train).
+    n_train: int = len(train_dataset)
+    train_drop_last: bool = (n_train // batch_size) >= 1
+
     train_loader = DataLoader(
         train_dataset,
         batch_size  = batch_size,
         shuffle     = True,
-        drop_last   = False,   # giữ samples cuối (có thể batch nhỏ hơn)
+        drop_last   = train_drop_last,
         num_workers = 0,       # CPU-only, không cần multiprocessing
     )
     val_loader = DataLoader(
