@@ -64,6 +64,7 @@ from app.config import (
     TARGET_COL,
 )
 from app.models.bilstm import BiLSTM
+from app.services.dataset_builder import prepare_fold_data
 from app.services.dataset_builder import StockDataset, build_sequences
 from app.services.preprocessing import FeatureScaler
 from app.services.training_service import train_model
@@ -79,6 +80,17 @@ optuna.logging.set_verbosity(optuna.logging.WARNING)
 PROCESSED_DIR   = Path(PATHS["processed"])
 EXPERIMENTS_DIR = Path(PATHS["experiments"])
 
+def _get_params_filename(task: str) -> str:
+    """
+    Tên file best_params dựa trên task.
+ 
+    Classification HPO lưu riêng để không ghi đè regression params.
+    """
+    return (
+        "best_params_classification.json"
+        if task == "classification"
+        else "best_params.json"
+    )
 
 # =============================================================================
 # HELPER — Build feature_info dict
@@ -314,175 +326,244 @@ def create_objective(
 # 2. RUN HPO FOR FOLD
 # =============================================================================
 
+
 def run_hpo_for_fold(
-    df_processed: pd.DataFrame,
-    fold: dict,
-    feature_info: dict,
-    n_trials: int = OPTUNA_TRIALS,
-    fold_idx: int = 1,
-    ticker: str = "",
-    currency: str = "",
-    use_wavelet: bool = True,
+    df_processed : pd.DataFrame,
+    fold         : dict,
+    feature_info : dict,
+    n_trials     : int,
+    fold_idx     : int,
+    ticker       : str,
+    currency     : str,
+    use_wavelet  : bool,
+    task         : str = "regression",
 ) -> dict:
     """
-    Chạy Optuna HPO cho BiLSTM trên một Walk-Forward fold.
+    Chạy Optuna HPO cho BiLSTM trên một fold.
 
-    Pipeline:
-      1. Tạo objective function từ fold data + feature info
-      2. Tạo Optuna study (minimize, TPESampler seed=42)
-      3. Chạy n_trials trials
-      4. Lưu best_params → experiments/{ticker}_{currency}_{cond}/fold_{i}/best_params.json
-      5. Return best_params dict
+    task='regression':
+      - Dùng create_objective() gốc (daily sequences, minimize MSE)
+      - Output: best_params.json
 
-    Best_params saved format (JSON):
-      {
-        "num_layers": 2,
-        "hidden_units": 128,
-        "dropout_rate": 0.2,
-        "learning_rate": 0.001,
-        "batch_size": 64,
-        "sequence_length": 20,
-        "use_wavelet": true,
-        "approx_indices": [...],
-        "detail_indices": [...],
-        "_meta": {
-          "ticker": "VCB", "currency": "VND", "fold_idx": 1,
-          "n_trials": 30, "best_val_loss": 0.012345,
-          "n_trials_completed": 30
-        }
-      }
+    task='classification':
+      - Dùng _create_classification_objective() (weekly sequences T2-T6, minimize BCE)
+      - Output: best_params_classification.json
 
     Args:
-        df_processed: Full preprocessed DataFrame (feature_cols + "Close").
-        fold:         Fold definition dict (fold_id, train_end, test_start, test_end).
-        feature_info: Dict từ build_feature_info():
-                        feature_cols, n_features, approx_indices, detail_indices,
-                        use_wavelet.
-        n_trials:     Số Optuna trials. Default: OPTUNA_TRIALS=30 (config).
-        fold_idx:     1-based fold index — dùng để đặt tên thư mục và log.
-        ticker:       Mã cổ phiếu — dùng để đặt tên thư mục.
-        currency:     Tiền tệ — dùng để đặt tên thư mục.
-        use_wavelet:  True = wavelet condition — dùng để đặt tên thư mục.
+        df_processed:  Full processed DataFrame từ pkl.
+        fold:          Fold definition dict (fold_id, train_end, test_start, test_end).
+        feature_info:  Dict từ build_feature_info() (n_features, approx/detail indices).
+        n_trials:      Số Optuna trials.
+        fold_idx:      Index fold (1, 2, 3).
+        ticker, currency, use_wavelet: Metadata cho save path.
+        task:          'regression' hoặc 'classification'.
 
     Returns:
-        best_params dict (JSON-serializable) với tất cả hyperparameters
-        + BiLSTM-specific params (use_wavelet, approx_indices, detail_indices).
-        Cùng format với params dict được truyền vào train_model().
-
-    Raises:
-        ValueError: Nếu feature_info thiếu required keys.
-        RuntimeError: Nếu tất cả trials fail (best_val_loss = inf).
+        best_params dict (đã được lưu vào JSON).
     """
-    # ── Validate feature_info ─────────────────────────────────────────────────
-    required_info_keys = {"feature_cols", "n_features", "approx_indices",
-                          "detail_indices", "use_wavelet"}
-    missing = required_info_keys - set(feature_info.keys())
-    if missing:
+    # Dispatch: dùng đúng objective function theo task
+    if task == "regression":
+        # Dùng create_objective() gốc — đã tested và correct cho regression
+        objective = create_objective(
+            df_processed   = df_processed,
+            fold           = fold,
+            feature_cols   = feature_info["feature_cols"],
+            n_features     = feature_info["n_features"],
+            use_wavelet    = use_wavelet,
+            approx_indices = feature_info["approx_indices"],
+            detail_indices = feature_info["detail_indices"],
+        )
+    elif task == "classification":
+        # Dùng objective mới cho weekly classification sequences
+        objective = _create_classification_objective(
+            df_processed = df_processed,
+            fold         = fold,
+            feature_info = feature_info,
+            use_wavelet  = use_wavelet,
+        )
+    else:
         raise ValueError(
-            f"run_hpo_for_fold: feature_info thiếu keys {sorted(missing)}."
+            f"run_hpo_for_fold: task='{task}' không hợp lệ. "
+            f"Chọn: 'regression' hoặc 'classification'."
         )
 
-    feature_cols   : list[str] = feature_info["feature_cols"]
-    n_features     : int       = feature_info["n_features"]
-    approx_indices : list[int] = feature_info["approx_indices"]
-    detail_indices : list[int] = feature_info["detail_indices"]
-    # use_wavelet từ tham số trực tiếp (ưu tiên hơn feature_info["use_wavelet"])
-
-    fold_id  = fold.get("fold_id", fold_idx)
-    cond_str = "wavelet" if use_wavelet else "nowave"
-
-    logger.info(
-        "[HPO] Start | %s_%s_%s | Fold %d | trials=%d | "
-        "n_features=%d | use_wavelet=%s",
-        ticker, currency, cond_str, fold_idx, n_trials,
-        n_features, use_wavelet,
-    )
-
-    t_start = time.time()
-
-    # ── Tạo objective function ────────────────────────────────────────────────
-    objective = create_objective(
-        df_processed   = df_processed,
-        fold           = fold,
-        feature_cols   = feature_cols,
-        n_features     = n_features,
-        use_wavelet    = use_wavelet,
-        approx_indices = approx_indices,
-        detail_indices = detail_indices,
-    )
-
-    # ── Tạo Optuna study ──────────────────────────────────────────────────────
-    # TPESampler(seed=42): Tree-structured Parzen Estimator, reproducible
-    sampler = optuna.samplers.TPESampler(seed=SEED)
+    # ── Run Optuna study ──────────────────────────────────────────────────────
     study = optuna.create_study(
-        direction = "minimize",   # minimize val_loss (MSE)
-        sampler   = sampler,
-        study_name = f"{ticker}_{currency}_{cond_str}_fold{fold_idx}",
+        direction = "minimize",
+        sampler   = optuna.samplers.TPESampler(seed=SEED),
     )
+    study.optimize(objective, n_trials=n_trials, show_progress_bar=False)
 
-    # ── Chạy optimization ─────────────────────────────────────────────────────
-    study.optimize(
-        objective,
-        n_trials    = n_trials,
-        show_progress_bar = False,   # tắt tqdm để log sạch hơn
-    )
-
-    elapsed = time.time() - t_start
-
-    # ── Lấy best trial ────────────────────────────────────────────────────────
-    best_trial = study.best_trial
-
-    if best_trial.value == float("inf"):
-        raise RuntimeError(
-            f"run_hpo_for_fold: tất cả {n_trials} trials đều fail "
-            f"(best_val_loss = inf). Kiểm tra data và model setup."
-        )
-
-    n_completed = len([t for t in study.trials
-                       if t.state == optuna.trial.TrialState.COMPLETE])
-
-    # ── Xây dựng best_params dict ─────────────────────────────────────────────
-    best_params: dict = dict(best_trial.params)
-
-    # Thêm BiLSTM-specific params (không trong Optuna search space)
-    best_params["use_wavelet"] = use_wavelet
-    if use_wavelet:
-        best_params["approx_indices"] = approx_indices
-        best_params["detail_indices"] = detail_indices
-
-    # Metadata cho traceability
-    best_params["_meta"] = {
-        "ticker":            ticker,
-        "currency":          currency,
-        "use_wavelet":       use_wavelet,
-        "fold_idx":          fold_idx,
-        "n_trials":          n_trials,
-        "n_trials_completed": n_completed,
-        "best_val_loss":     best_trial.value,
-        "elapsed_seconds":   round(elapsed, 2),
+    # ── Extract best params ───────────────────────────────────────────────────
+    best = study.best_trial
+    best_params = {
+        "num_layers"     : best.params["num_layers"],
+        "hidden_units"   : best.params["hidden_units"],
+        "dropout_rate"   : best.params["dropout_rate"],
+        "learning_rate"  : best.params["learning_rate"],
+        "batch_size"     : best.params["batch_size"],
+        "sequence_length": best.params["sequence_length"],
+        "use_wavelet"    : use_wavelet,
+        # Thêm feature_info keys (approx/detail indices) — cần cho BiLSTM
+        **{k: v for k, v in feature_info.items() if k != "n_features"},
+        "_meta": {
+            "ticker"        : ticker,
+            "currency"      : currency,
+            "use_wavelet"   : use_wavelet,
+            "fold_idx"      : fold_idx,
+            "task"          : task,
+            "n_trials"      : n_trials,
+            "best_val_loss" : best.value,
+            "best_trial_num": best.number,
+        },
     }
 
-    logger.info(
-        "[HPO] Done  | %s_%s_%s | Fold %d | "
-        "best_val_loss=%.6f | best_epoch_params=%s | "
-        "time=%.1fs | %d/%d trials completed",
-        ticker, currency, cond_str, fold_idx,
-        best_trial.value,
-        {k: v for k, v in best_params.items()
-         if k not in ("approx_indices", "detail_indices", "use_wavelet", "_meta")},
-        elapsed, n_completed, n_trials,
-    )
-
-    # ── Lưu best_params.json ─────────────────────────────────────────────────
+    # Lưu vào đúng file tùy task (best_params.json hoặc best_params_classification.json)
     _save_best_params(
         best_params = best_params,
         ticker      = ticker,
         currency    = currency,
         use_wavelet = use_wavelet,
         fold_idx    = fold_idx,
+        task        = task,
     )
 
     return best_params
+
+
+# =============================================================================
+# 2b. CLASSIFICATION OBJECTIVE (weekly sequences, BCE loss)
+# =============================================================================
+
+def _create_classification_objective(
+    df_processed : pd.DataFrame,
+    fold         : dict,
+    feature_info : dict,
+    use_wavelet  : bool,
+) -> Callable:
+    """
+    Tạo Optuna objective function cho classification task (weekly sequences T2-T6).
+
+    Khác với create_objective() (regression):
+      - Dùng prepare_fold_data(task='classification') → build_weekly_sequences() nội bộ
+        → 1 sample/tuần, target = hướng đi tuần kế tiếp (UP=1/DOWN=0)
+      - Minimize BCE loss thay vì MSE
+      - Split train_dataset (StockDataset) bằng torch.utils.data.Subset
+
+    Args:
+        df_processed:  Full processed DataFrame.
+        fold:          Fold definition dict.
+        feature_info:  Dict từ build_feature_info().
+        use_wavelet:   True = dual-branch BiLSTM.
+
+    Returns:
+        objective(trial: optuna.Trial) -> float (BCE val_loss, minimize)
+    """
+    fold_id = fold.get("fold_id", "?")
+
+    def objective(trial: optuna.Trial) -> float:
+        # ── 1. Sample hyperparameters ─────────────────────────────────────────
+        params: dict = {
+            "num_layers":      trial.suggest_int(
+                "num_layers",
+                min(HPO_SEARCH_SPACE["num_layers"]),
+                max(HPO_SEARCH_SPACE["num_layers"]),
+            ),
+            "hidden_units":    trial.suggest_categorical(
+                "hidden_units", HPO_SEARCH_SPACE["hidden_units"]
+            ),
+            "dropout_rate":    trial.suggest_categorical(
+                "dropout_rate", HPO_SEARCH_SPACE["dropout_rate"]
+            ),
+            "learning_rate":   trial.suggest_categorical(
+                "learning_rate", HPO_SEARCH_SPACE["learning_rate"]
+            ),
+            "batch_size":      trial.suggest_categorical(
+                "batch_size", HPO_SEARCH_SPACE["batch_size"]
+            ),
+            "sequence_length": trial.suggest_categorical(
+                "sequence_length", HPO_SEARCH_SPACE["sequence_length"]
+            ),
+        }
+
+        # BiLSTM-specific params (wavelet indices cho dual-branch)
+        params["use_wavelet"] = use_wavelet
+        if use_wavelet:
+            params["approx_indices"] = feature_info["approx_indices"]
+            params["detail_indices"] = feature_info["detail_indices"]
+
+        try:
+            # ── 2. Chuẩn bị weekly dataset ────────────────────────────────────
+            # FIX: prepare_fold_data chỉ nhận (df, fold, sequence_length, task)
+            #      KHÔNG có param 'feature_info' hay 'seq_len'
+            fold_data = prepare_fold_data(
+                df              = df_processed,
+                fold            = fold,
+                sequence_length = params["sequence_length"],   # FIX: đúng tên param
+                task            = "classification",            # weekly sequences
+                # KHÔNG truyền feature_info — không phải param của hàm này
+            )
+
+            # FIX: prepare_fold_data trả về "train_dataset" (StockDataset), không phải X/y arrays
+            train_dataset = fold_data["train_dataset"]
+            n_feat        = fold_data["n_features"]
+
+            # ── 3. 90%/10% split (chronological, không shuffle) ───────────────
+            n_total = len(train_dataset)
+            split   = int(n_total * 0.9)
+
+            if split < 2 or (n_total - split) < 1:
+                logger.debug(
+                    "[HPO cls Fold %s | Trial %d] Quá ít weekly samples: n_total=%d",
+                    fold_id, trial.number, n_total,
+                )
+                return float("inf")
+
+            # torch.utils.data.Subset để split theo index (không copy data)
+            from torch.utils.data import Subset
+            hpo_train_ds = Subset(train_dataset, list(range(split)))
+            hpo_val_ds   = Subset(train_dataset, list(range(split, n_total)))
+
+            # ── 4. Build BiLSTM model ─────────────────────────────────────────
+            model = BiLSTM(
+                task       = "classification",
+                n_features = n_feat,
+                params     = params,
+            )
+
+            # ── 5. Train và lấy val BCE loss ──────────────────────────────────
+            # FIX: train_model nhận (model, train_dataset, val_dataset, params, task)
+            #      KHÔNG nhận X_train/y_train/X_val/y_val rời
+            result = train_model(
+                model         = model,
+                train_dataset = hpo_train_ds,     # FIX: StockDataset / Subset
+                val_dataset   = hpo_val_ds,       # FIX: StockDataset / Subset
+                params        = params,            # chứa batch_size, learning_rate
+                task          = "classification",
+                max_epochs    = OPTUNA_HPO_EPOCHS, # giới hạn epochs cho HPO nhanh
+                save_path     = None,
+            )
+
+            val_loss: float = result["best_val_loss"]  # BCE loss
+
+            logger.debug(
+                "[HPO cls Fold %s | Trial %d] BCE val_loss=%.6f | params=%s",
+                fold_id, trial.number, val_loss,
+                {k: v for k, v in params.items()
+                 if k not in ("approx_indices", "detail_indices", "use_wavelet")},
+            )
+            return val_loss
+
+        except Exception as exc:
+            logger.warning(
+                "[HPO cls Fold %s | Trial %d] Failed: %s",
+                fold_id, trial.number, exc,
+            )
+            return float("inf")
+
+    return objective
+
+
 
 
 # =============================================================================
@@ -493,40 +574,30 @@ def run_full_hpo(
     ticker     : str,
     currency   : str,
     use_wavelet: bool,
-    n_trials   : int = OPTUNA_TRIALS,
+    n_trials   : int   = OPTUNA_TRIALS,
+    task       : str   = "regression",
 ) -> list[dict]:
     """
-    Chạy HPO cho BiLSTM trên cả 3 Walk-Forward folds.
-
-    Load processed data từ disk, build feature_info, rồi gọi
-    run_hpo_for_fold() cho mỗi fold.
-
-    Best_params được tự động lưu vào:
-      experiments/{ticker}_{currency}_{cond}/fold_{i}/best_params.json
-
-    Sau khi chạy xong, DNN/RNN/GRU/LSTM sẽ load các file này để
-    dùng chung hyperparameters (cùng fold, cùng condition).
+    Chạy HPO cho tất cả 3 folds của một (ticker, currency, wavelet) combination.
 
     Args:
-        ticker:      "VCB" hoặc "VIC".
-        currency:    "VND" hoặc "USD".
-        use_wavelet: True = wavelet pipeline.
-        n_trials:    Số Optuna trials per fold. Default: 30 (config).
+        ticker, currency, use_wavelet: Xác định dataset pkl.
+        n_trials: Số Optuna trials mỗi fold.
+        task: 'regression' hoặc 'classification'.
+              Kết quả lưu vào best_params.json hoặc best_params_classification.json.
 
     Returns:
-        list[dict] gồm 3 phần tử:
-          [best_params_fold1, best_params_fold2, best_params_fold3]
-        Mỗi dict là best_params từ run_hpo_for_fold() (JSON-serializable).
+        List 3 best_params dicts (một mỗi fold).
 
     Raises:
-        FileNotFoundError: Nếu processed pkl file chưa tồn tại.
-                           Chạy scripts/preprocess.py trước.
+        FileNotFoundError: Nếu pkl chưa được tạo (chạy preprocess.py trước).
         RuntimeError:      Nếu HPO fail cho bất kỳ fold nào.
     """
     cond_str = "wavelet" if use_wavelet else "nowave"
     label    = f"{ticker}_{currency}_{cond_str}"
+    fname    = _get_params_filename(task)
 
-    # ── Load processed data từ pkl ─────────────────────────────────────────────
+    # Load processed data từ pkl
     pkl_path = PROCESSED_DIR / f"{label}.pkl"
     if not pkl_path.exists():
         raise FileNotFoundError(
@@ -534,35 +605,31 @@ def run_full_hpo(
             f"Chạy 'uv run python scripts/preprocess.py' trước."
         )
 
-    logger.info("[run_full_hpo] Load: %s", pkl_path)
+    logger.info("[run_full_hpo] task=%s | Load: %s", task, pkl_path)
     with open(pkl_path, "rb") as f:
         data = pickle.load(f)
 
     df_processed : pd.DataFrame = data["df"]
     feature_cols : list[str]    = data["feature_cols"]
+    # build_feature_info được định nghĩa trong cùng file này — không cần import
     feature_info : dict         = build_feature_info(feature_cols)
 
     logger.info(
-        "[run_full_hpo] %s | rows=%d | n_features=%d | "
-        "approx=%d | detail=%d",
-        label, len(df_processed), feature_info["n_features"],
-        len(feature_info["approx_indices"]),
-        len(feature_info["detail_indices"]),
+        "[run_full_hpo] %s | task=%s | rows=%d | n_features=%d | output=%s",
+        label, task, len(df_processed), feature_info["n_features"], fname,
     )
 
-    # ── Chạy HPO cho từng fold ─────────────────────────────────────────────────
     all_best_params: list[dict] = []
     total_start = time.time()
 
     for fold_idx, fold in enumerate(FOLDS, start=1):
         logger.info(
-            "[run_full_hpo] === Fold %d/%d | Train→%s | Test: %s→%s ===",
-            fold_idx, len(FOLDS),
+            "[run_full_hpo] === Fold %d/%d | task=%s | Train→%s | Test: %s→%s ===",
+            fold_idx, len(FOLDS), task,
             fold["train_end"], fold["test_start"], fold["test_end"],
         )
 
-        fold_start = time.time()
-
+        fold_start  = time.time()
         best_params = run_hpo_for_fold(
             df_processed = df_processed,
             fold         = fold,
@@ -572,26 +639,21 @@ def run_full_hpo(
             ticker       = ticker,
             currency     = currency,
             use_wavelet  = use_wavelet,
+            task         = task,
         )
-
         fold_elapsed = time.time() - fold_start
         all_best_params.append(best_params)
 
         logger.info(
-            "[run_full_hpo] Fold %d done | time=%.1fs | "
-            "best_val_loss=%.6f",
-            fold_idx, fold_elapsed,
-            best_params["_meta"]["best_val_loss"],
+            "[run_full_hpo] Fold %d done | task=%s | time=%.1fs | best_val_loss=%.6f",
+            fold_idx, task, fold_elapsed, best_params["_meta"]["best_val_loss"],
         )
 
-    total_elapsed = time.time() - total_start
     logger.info(
-        "[run_full_hpo] All 3 folds done | %s | total_time=%.1fs",
-        label, total_elapsed,
+        "[run_full_hpo] All 3 folds done | %s | task=%s | total_time=%.1fs",
+        label, task, time.time() - total_start,
     )
-
     return all_best_params
-
 
 # =============================================================================
 # INTERNAL HELPERS
@@ -603,32 +665,27 @@ def _save_best_params(
     currency   : str,
     use_wavelet: bool,
     fold_idx   : int,
+    task       : str = "regression",   # ← THÊM PARAM NÀY
 ) -> Path:
     """
     Lưu best_params dict ra file JSON.
-
-    Path: experiments/{ticker}_{currency}_{cond}/fold_{fold_idx}/best_params.json
-
-    Args:
-        best_params: Dict hyperparameters + metadata + BiLSTM-specific params.
-        ticker:      Mã cổ phiếu.
-        currency:    Tiền tệ.
-        use_wavelet: True → cond = "wavelet", False → cond = "nowave".
-        fold_idx:    1-based fold index.
-
-    Returns:
-        Path object của file đã lưu.
+ 
+    Path:
+      regression    : experiments/{ticker}_{currency}_{cond}/fold_{i}/best_params.json
+      classification: experiments/{ticker}_{currency}_{cond}/fold_{i}/best_params_classification.json
     """
     cond_str = "wavelet" if use_wavelet else "nowave"
+    fname    = _get_params_filename(task)   # ← DÙNG HELPER MỚI
     out_dir  = EXPERIMENTS_DIR / f"{ticker}_{currency}_{cond_str}" / f"fold_{fold_idx}"
     out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = out_dir / "best_params.json"
-
+    out_path = out_dir / fname
+ 
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(best_params, f, indent=2, ensure_ascii=False)
-
-    logger.info("[HPO] best_params.json saved → %s", out_path)
+ 
+    logger.info("[_save_best_params] Saved %s → %s", fname, out_path)
     return out_path
+
 
 
 def load_best_params(
@@ -636,41 +693,56 @@ def load_best_params(
     currency   : str,
     use_wavelet: bool,
     fold_idx   : int,
+    task       : str = "regression",   # ← THÊM PARAM NÀY
 ) -> dict:
     """
-    Load best_params.json đã lưu từ run_hpo_for_fold().
-
-    Dùng bởi DNN/RNN/GRU/LSTM để lấy shared hyperparameters của BiLSTM.
-
+    Load best_params từ file JSON.
+ 
+    Logic:
+      - task='regression'     → load best_params.json
+      - task='classification' → load best_params_classification.json nếu tồn tại,
+                                fallback sang best_params.json (regression params)
+                                với cảnh báo log.
+ 
     Args:
-        ticker:      Mã cổ phiếu.
-        currency:    Tiền tệ.
-        use_wavelet: Wavelet condition.
-        fold_idx:    1-based fold index.
-
+        ticker, currency, use_wavelet, fold_idx: Xác định thư mục experiment.
+        task: 'regression' hoặc 'classification'. Default: 'regression'.
+ 
     Returns:
-        best_params dict (JSON đã load).
-
+        dict best_params (đọc từ JSON).
+ 
     Raises:
-        FileNotFoundError: Nếu JSON file chưa tồn tại.
-                           Chạy run_hpo_for_fold() trước.
+        FileNotFoundError: Nếu cả best_params_classification.json và best_params.json
+                          đều không tồn tại.
     """
     cond_str = "wavelet" if use_wavelet else "nowave"
-    json_path = (
-        EXPERIMENTS_DIR
-        / f"{ticker}_{currency}_{cond_str}"
-        / f"fold_{fold_idx}"
-        / "best_params.json"
-    )
-
-    if not json_path.exists():
+    base_dir = EXPERIMENTS_DIR / f"{ticker}_{currency}_{cond_str}" / f"fold_{fold_idx}"
+ 
+    # ── Classification: try specific file first, fallback to regression ────────
+    if task == "classification":
+        cls_path = base_dir / "best_params_classification.json"
+        if cls_path.exists():
+            logger.debug("[load_best_params] Loading classification params: %s", cls_path)
+            with open(cls_path, encoding="utf-8") as f:
+                return json.load(f)
+        else:
+            # Fallback: dùng regression params nếu chưa có classification HPO
+            logger.warning(
+                "[load_best_params] best_params_classification.json không tồn tại "
+                "(%s fold %d). Fallback sang regression params. "
+                "Chạy: uv run python scripts/run_hpo.py --task classification "
+                "--ticker %s --wavelet %s",
+                f"{ticker}_{currency}_{cond_str}", fold_idx, ticker,
+                "true" if use_wavelet else "false",
+            )
+ 
+    # ── Regression (default) hoặc classification fallback ─────────────────────
+    reg_path = base_dir / "best_params.json"
+    if not reg_path.exists():
         raise FileNotFoundError(
-            f"load_best_params: Không tìm thấy {json_path}. "
-            f"Chạy run_hpo_for_fold() cho Fold {fold_idx} trước."
+            f"best_params.json không tồn tại: {reg_path}. "
+            f"Chạy HPO trước: uv run python scripts/run_hpo.py "
+            f"--ticker {ticker} --wavelet {'true' if use_wavelet else 'false'}"
         )
-
-    with open(json_path, "r", encoding="utf-8") as f:
-        params = json.load(f)
-
-    logger.info("[HPO] best_params loaded ← %s", json_path)
-    return params
+    with open(reg_path, encoding="utf-8") as f:
+        return json.load(f)

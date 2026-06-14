@@ -59,79 +59,45 @@ const BASE_OPTIONS = {
   },
 };
 
-// ── Wheel zoom + drag-pan (inline plugin — no CDN needed) ────────────────────
-const _zoomPanPlugin = {
-  id: 'zoomPan',
-  afterInit(chart) {
-    const canvas = chart.canvas;
-    let isDragging = false, dragStartX = 0, dragStartY = 0;
-    let origMin = {}, origMax = {};
+// ── chartjs-plugin-zoom config (loaded via CDN: hammerjs + chartjs-plugin-zoom) ─
+// Plugin auto-registers when loaded as UMD. Config lives in options.plugins.zoom.
 
-    // Save original axis bounds
-    function _saveOrig() {
-      for (const id in chart.scales) {
-        const s = chart.scales[id];
-        origMin[id] = s.min ?? s._range?.min;
-        origMax[id] = s._range?.max;
-      }
-    }
-
-    // Wheel zoom
-    canvas.addEventListener('wheel', (e) => {
-      e.preventDefault();
-      const factor = e.deltaY > 0 ? 1.15 : 0.87;
-      const rect = canvas.getBoundingClientRect();
-      const px = e.clientX - rect.left;
-      const py = e.clientY - rect.top;
-
-      for (const id in chart.scales) {
-        const s = chart.scales[id];
-        if (s.type === 'category') continue;
-        const min = s.min ?? s.min, max = s.max ?? s.max;
-        const ratio = id.startsWith('x')
-          ? (s.getValueForPixel(px) - min) / (max - min)
-          : (s.getValueForPixel(py) - min) / (max - min);
-        const range = (max - min) * factor;
-        const center = s.getValueForPixel(id.startsWith('x') ? px : py);
-        s.options.min = center - range * ratio;
-        s.options.max = center + range * (1 - ratio);
-      }
-      chart.update('none');
-    }, { passive: false });
-
-    // Drag pan
-    canvas.addEventListener('mousedown', (e) => {
-      isDragging = true; dragStartX = e.clientX; dragStartY = e.clientY;
-    });
-    window.addEventListener('mousemove', (e) => {
-      if (!isDragging) return;
-      const dx = e.clientX - dragStartX, dy = e.clientY - dragStartY;
-      dragStartX = e.clientX; dragStartY = e.clientY;
-      for (const id in chart.scales) {
-        const s = chart.scales[id];
-        if (s.type === 'category' || s.min == null) continue;
-        const range = (s.max - s.min);
-        const delta = id.startsWith('x')
-          ? -dx / canvas.width * range
-          : dy / canvas.height * range;
-        s.options.min = s.min + delta;
-        s.options.max = s.max + delta;
-      }
-      chart.update('none');
-    });
-    window.addEventListener('mouseup', () => { isDragging = false; });
-
-    // Double-click: reset zoom
-    canvas.addEventListener('dblclick', () => {
-      for (const id in chart.scales) {
-        const s = chart.scales[id];
-        s.options.min = undefined;
-        s.options.max = undefined;
-      }
-      chart.update();
-    });
+// Line / time-series charts: zoom only the X (time) axis.
+// Y axis auto-scales to show the full range of visible data.
+// This prevents the "converging to 1 / 0%" issue on cumulative return charts.
+const _ZOOM_OPTS_X = {
+  zoom: {
+    wheel: { enabled: true, speed: 0.1 },
+    pinch: { enabled: true },
+    mode: 'x',  // ← X-axis only
+  },
+  pan: {
+    enabled: true,
+    mode: 'x',
   },
 };
+
+// Scatter / ROC chart: zoom both axes (the chart is a 0-1 unit square).
+const _ZOOM_OPTS_XY = {
+  zoom: {
+    wheel: { enabled: true, speed: 0.1 },
+    pinch: { enabled: true },
+    mode: 'xy',
+  },
+  pan: {
+    enabled: true,
+    mode: 'xy',
+  },
+};
+
+/** Attach double-click → resetZoom() on the chart's canvas. */
+function _attachZoomReset(chart) {
+  if (chart?.canvas) {
+    chart.canvas.addEventListener('dblclick', () => {
+      try { chart.resetZoom(); } catch (_) {}
+    });
+  }
+}
 
 // ── Best epoch vertical line plugin (for loss curves) ────────────────────────
 function _bestEpochPlugin(bestEpoch) {
@@ -213,11 +179,12 @@ function buildPredChart(canvasId, seriesList) {
       ...BASE_OPTIONS,
       plugins: {
         ...BASE_OPTIONS.plugins,
+        zoom: _ZOOM_OPTS_X,  // X-axis only: Y auto-scales (avoids converge-to-0 on cumulative returns)
         title: { display: true, text: 'Predicted vs Actual Close Price (VND)', color: '#e0e0e0', font: { size: 12 } },
       },
     },
-    plugins: [_zoomPanPlugin],
   });
+  _attachZoomReset(chart);
   _chartInstances[canvasId] = chart;
 }
 
@@ -258,6 +225,7 @@ function buildLossChart(canvasId, data) {
       ...BASE_OPTIONS,
       plugins: {
         ...BASE_OPTIONS.plugins,
+        zoom: _ZOOM_OPTS_X,  // X-axis only: Y auto-scales (avoids converge-to-0 on cumulative returns)
         title: {
           display: true,
           text: data.model_label || 'Loss Curves',
@@ -270,8 +238,10 @@ function buildLossChart(canvasId, data) {
         y: { ...BASE_OPTIONS.scales.y, title: { display: true, text: 'Loss', color: '#9e9e9e', font: { size: 10 } } },
       },
     },
-    plugins: [_zoomPanPlugin, _bestEpochPlugin(data.best_epoch)],
+    // _bestEpochPlugin is an inline plugin (chart-level), separate from options.plugins
+    plugins: [_bestEpochPlugin(data.best_epoch)],
   });
+  _attachZoomReset(chart);
   _chartInstances[canvasId] = chart;
 }
 
@@ -328,6 +298,7 @@ function buildTradingLineChart(canvasId, seriesList, showWavelet = true) {
       interaction: { mode: 'index', intersect: false },
       plugins: {
         ...BASE_OPTIONS.plugins,
+        zoom: _ZOOM_OPTS_X,  // X-axis only: Y auto-scales (avoids converge-to-0 on cumulative returns)
         title: {
           display: true,
           text: `Cumulative Returns (Weekly) — ${showWavelet ? 'With Wavelet' : 'No Wavelet'} | Strategy vs Buy & Hold`,
@@ -349,8 +320,8 @@ function buildTradingLineChart(canvasId, seriesList, showWavelet = true) {
         },
       },
     },
-    plugins: [_zoomPanPlugin],
   });
+  _attachZoomReset(chart);
   _chartInstances[canvasId] = chart;
 }
 
@@ -402,6 +373,7 @@ function buildRocOverlayChart(canvasId, rocList) {
       showLine: true,
       plugins: {
         ...BASE_OPTIONS.plugins,
+        zoom: _ZOOM_OPTS_XY, // ROC is a 0-1 unit square → allow both-axis zoom
         title: { display: true, text: 'ROC Curves — All Models (Fold selected)', color: '#e0e0e0', font: { size: 12 } },
       },
       scales: {
@@ -415,8 +387,8 @@ function buildRocOverlayChart(canvasId, rocList) {
         },
       },
     },
-    plugins: [_zoomPanPlugin],
   });
+  _attachZoomReset(chart);
   _chartInstances[canvasId] = chart;
 }
 

@@ -3,7 +3,7 @@
  * ====================
  * Dashboard controller for VNSP — Redesign 2026-06
  *
- * Sections: Data | Pipeline | Regression | Classification | Trading
+ * Sections: Data | Regression | Classification | Trading
  * All charts/plots support click-to-zoom (modal).
  *
  * Dependencies: Chart.js 4.4.2, api.js, charts.js
@@ -135,9 +135,10 @@ async function loadData() {
       api.getFeatures(ticker, 'VND', wavelet, 50),
     ]);
 
-    // Raw table
+    // Raw table — n_rows is total rows in dataset within date range, data is limited to 50
     if (rawRes.status === 'fulfilled' && rawRes.value?.data) {
-      document.getElementById('raw-count').textContent = `${rawRes.value.n_rows} rows`;
+      const nTotal = rawRes.value.n_rows ?? rawRes.value.data.length;
+      document.getElementById('raw-count').textContent = `${nTotal} rows (showing 50)`;
       renderTable('raw-tbody', rawRes.value.data, ['Date', 'Open', 'High', 'Low', 'Close', 'Volume']);
     }
 
@@ -196,232 +197,10 @@ async function _loadVizImage(containerId, fetchFn, label) {
   }
 }
 
-// =============================================================================
-// SECTION 2 — PIPELINE ANALYSIS
-// =============================================================================
-
-async function loadArchitecture() {
-  const ticker  = sel('pipe-ticker');
-  const model   = sel('pipe-model');
-  const task    = sel('pipe-task');
-  const wavelet = sel('pipe-wavelet') === 'true';
-  const fold    = parseInt(sel('pipe-fold'), 10) || 1;
-  const cond    = wavelet ? 'wavelet' : 'nowave';
-  const expId   = buildExpId(ticker, 'VND', wavelet, model, task);
-
-  setHTML('arch-title', `Architecture — ${model} · ${task} · ${wavelet ? 'With Wavelet' : 'No Wavelet'} · ${FOLD_LABELS[fold]}`);
-  setHTML('arch-body', '<div class="loading-placeholder">Loading hyperparameters…</div>');
-  setHTML('flow-body', '<div class="loading-placeholder">Loading…</div>');
-
-  ui.showSpinner('Loading architecture…');
-  try {
-    // Load actual best_params from API
-    const paramsRes = await api.getBestParams(expId, fold).catch(() => null);
-    const params    = paramsRes?.best_params ?? {};
-
-    // Feature count: wavelet ~8, nowave = 5 (from preprocessing)
-    // Load actual feature count from features API
-    const featRes = await api.getFeatures(ticker, 'VND', wavelet, 1).catch(() => null);
-    const nFeatures = featRes?.feature_names
-      ? featRes.feature_names.filter(f => f !== 'Close').length
-      : (wavelet ? 8 : 5);
-
-    // Render architecture diagram
-    setHTML('arch-body', _renderArchDiagram(model, task, wavelet, params, nFeatures));
-    // Render data flow
-    setHTML('flow-body', _renderDataFlow(model, task, wavelet, params, nFeatures));
-
-  } catch (e) {
-    setHTML('arch-body', `<div class="loading-placeholder text-red">Error: ${e.message}</div>`);
-  } finally { ui.hideSpinner(); }
-}
 
 /** Render architecture visualization as HTML */
-function _renderArchDiagram(model, task, wavelet, params, nFeatures) {
-  const seqLen  = params.sequence_length ?? 20;
-  const hidden  = params.hidden_units    ?? 64;
-  const nLayers = params.num_layers      ?? 1;
-  const dropout = params.dropout_rate    ?? 0.2;
-  const outDim  = task === 'regression' ? 1 : 1;
-  const outAct  = task === 'regression' ? 'Linear' : 'Sigmoid';
 
-  // Build model-specific layers HTML
-  let modelLayersHtml = '';
 
-  if (model === 'DNN') {
-    modelLayersHtml = `
-      <div class="arch-block model">
-        <div class="arch-label">Flatten</div>
-        <div class="arch-name">Dense Head</div>
-        <div class="arch-dim">${seqLen}×${nFeatures} → ${hidden}</div>
-      </div>
-      <span class="arch-arrow">→</span>
-      <div class="arch-block model">
-        <div class="arch-label">${nLayers} Dense Layer(s)</div>
-        <div class="arch-name">FC + ReLU + BN</div>
-        <div class="arch-dim">hidden=${hidden}</div>
-      </div>`;
-  } else if (model === 'RNN') {
-    modelLayersHtml = `
-      <div class="arch-block model">
-        <div class="arch-label">RNN × ${nLayers}</div>
-        <div class="arch-name">RNN (relu)</div>
-        <div class="arch-dim">in=${nFeatures} h=${hidden}</div>
-      </div>
-      <span class="arch-arrow">→</span>
-      <div class="arch-block model">
-        <div class="arch-label">Last timestep</div>
-        <div class="arch-name">FC Layer</div>
-        <div class="arch-dim">${hidden} → ${hidden}</div>
-      </div>`;
-  } else if (model === 'GRU') {
-    modelLayersHtml = `
-      <div class="arch-block model">
-        <div class="arch-label">GRU × ${nLayers}</div>
-        <div class="arch-name">GRU + BN1d</div>
-        <div class="arch-dim">in=${nFeatures} h=${hidden}</div>
-      </div>
-      <span class="arch-arrow">→</span>
-      <div class="arch-block model">
-        <div class="arch-label">Dropout(${dropout})</div>
-        <div class="arch-name">FC + ReLU</div>
-        <div class="arch-dim">${hidden} → ${hidden/2|0}</div>
-      </div>`;
-  } else if (model === 'LSTM') {
-    modelLayersHtml = `
-      <div class="arch-block model">
-        <div class="arch-label">LSTM × ${nLayers}</div>
-        <div class="arch-name">LSTM + BN1d</div>
-        <div class="arch-dim">in=${nFeatures} h=${hidden}</div>
-      </div>
-      <span class="arch-arrow">→</span>
-      <div class="arch-block model">
-        <div class="arch-label">3 Dense Layers</div>
-        <div class="arch-name">FC256→FC64→FC1</div>
-        <div class="arch-dim">dropout=${dropout}</div>
-      </div>`;
-  } else if (model === 'BiLSTM') {
-    if (wavelet) {
-      // Dual branch for wavelet case
-      const halfFeat = Math.ceil(nFeatures / 2);
-      const fuseSize = hidden * 4;  // 2 branches × 2 directions
-      modelLayersHtml = `
-        <div class="arch-dual-branch">
-          <div class="arch-branch-col">
-            <div class="arch-branch-label">A1 Branch (${halfFeat} feats)</div>
-            <div class="arch-block branch">
-              <div class="arch-label">BiLSTM × ${nLayers}</div>
-              <div class="arch-name">Approx</div>
-              <div class="arch-dim">→ ${hidden*2}</div>
-            </div>
-          </div>
-          <div style="display:flex;align-items:center;padding-top:20px;color:#3a3a5a">⊕</div>
-          <div class="arch-branch-col">
-            <div class="arch-branch-label">D1 Branch (${nFeatures-halfFeat} feats)</div>
-            <div class="arch-block branch">
-              <div class="arch-label">BiLSTM × ${nLayers}</div>
-              <div class="arch-name">Detail</div>
-              <div class="arch-dim">→ ${hidden*2}</div>
-            </div>
-          </div>
-        </div>
-        <span class="arch-arrow">→</span>
-        <div class="arch-block model">
-          <div class="arch-label">Concatenate</div>
-          <div class="arch-name">Fused</div>
-          <div class="arch-dim">${fuseSize}</div>
-        </div>`;
-    } else {
-      modelLayersHtml = `
-        <div class="arch-block model">
-          <div class="arch-label">BiLSTM × ${nLayers}</div>
-          <div class="arch-name">Bidirectional</div>
-          <div class="arch-dim">in=${nFeatures} h=${hidden}×2</div>
-        </div>
-        <span class="arch-arrow">→</span>
-        <div class="arch-block model">
-          <div class="arch-label">FC Layers</div>
-          <div class="arch-name">Dense Head</div>
-          <div class="arch-dim">${hidden*2} → ${hidden}</div>
-        </div>`;
-    }
-  }
-
-  // Params chips
-  const paramChips = Object.entries(params).filter(([k]) => k !== 'n_features').map(([k, v]) =>
-    `<div class="param-chip">
-      <div class="param-key">${k.replace(/_/g,' ')}</div>
-      <div class="param-val">${v}</div>
-    </div>`
-  ).join('');
-
-  return `
-    <div class="arch-flow">
-      <div class="arch-block input">
-        <div class="arch-label">Input Sequence</div>
-        <div class="arch-name">Sequences</div>
-        <div class="arch-dim">${seqLen} × ${nFeatures}</div>
-      </div>
-      <span class="arch-arrow">→</span>
-      ${modelLayersHtml}
-      <span class="arch-arrow">→</span>
-      <div class="arch-block output">
-        <div class="arch-label">Output Head</div>
-        <div class="arch-name">${outAct}</div>
-        <div class="arch-dim">→ ${outDim}</div>
-      </div>
-    </div>
-    ${paramChips ? `<div class="section-label mt-12">Best Hyperparameters</div><div class="params-grid">${paramChips}</div>` : ''}`;
-}
-
-/** Render data processing flow description */
-function _renderDataFlow(model, task, wavelet, params, nFeatures) {
-  const seqLen  = params.sequence_length ?? 20;
-  const steps = wavelet ? [
-    { icon: '1', label: 'Raw OHLCV (5)', desc: 'Open, High, Low, Close, Volume · VND' },
-    { icon: '2', label: '+ Deviation', desc: 'Deviation = Close − Open (buy/sell pressure)' },
-    { icon: '3', label: 'SWT db4 Level-1', desc: 'Each feature → Approx (A1) + Detail (D1) = 10 coefficients' },
-    { icon: '4', label: 'Feature Selection', desc: `Pearson |r| > 0.95 threshold · fit on Fold 1 train (≤2017) · ${nFeatures} features kept` },
-    { icon: '5', label: 'StandardScaler / RobustScaler', desc: 'Price/Deviation → StandardScaler · Volume → RobustScaler · Open_Approx unscaled' },
-    { icon: '6', label: `Sliding Window (L=${seqLen})`, desc: `Each sample: ${seqLen} × ${nFeatures} array → predict ${task === 'regression' ? 'Close(t+1)' : 'direction of next week'}` },
-  ] : [
-    { icon: '1', label: 'Raw OHLCV (5)', desc: 'Open, High, Low, Close, Volume · VND' },
-    { icon: '2', label: '+ Deviation', desc: 'Deviation = Close − Open (buy/sell pressure)' },
-    { icon: '3', label: '5 Raw Features', desc: 'Open, High, Low, Volume, Deviation · Close as target' },
-    { icon: '4', label: 'StandardScaler / RobustScaler', desc: 'Price/Deviation → StandardScaler · Volume → RobustScaler · Open unscaled' },
-    { icon: '5', label: `Sliding Window (L=${seqLen})`, desc: `Each sample: ${seqLen} × ${nFeatures} array → predict ${task === 'regression' ? 'Close(t+1)' : 'direction of next week'}` },
-  ];
-
-  const taskDesc = task === 'regression'
-    ? 'Loss: MSE · Metrics: MSE, MAE, MAPE, RMSE, R² · Output: price value (inverse-transformed to VND)'
-    : 'Loss: BCELoss + Sigmoid · Metrics: Accuracy, F1, AUC-ROC · Output: P(UP) probability · Target: weekly direction T2→T6';
-
-  return `
-    <div class="arch-flow" style="flex-direction:column;align-items:flex-start;gap:8px">
-      ${steps.map(s => `
-        <div style="display:flex;align-items:center;gap:12px;width:100%">
-          <div style="width:22px;height:22px;border-radius:50%;background:var(--blue-dim);
-            color:var(--blue);font-size:11px;font-weight:700;display:flex;align-items:center;
-            justify-content:center;flex-shrink:0">${s.icon}</div>
-          <div>
-            <div style="font-weight:600;font-size:12px">${s.label}</div>
-            <div style="font-size:11px;color:var(--fg-dim)">${s.desc}</div>
-          </div>
-        </div>
-        ${s !== steps[steps.length-1] ? '<div style="margin-left:10px;color:var(--border2)">↓</div>' : ''}
-      `).join('')}
-    </div>
-    <div class="mt-12" style="background:var(--bg3);border:1px solid var(--border);border-radius:6px;padding:10px 14px">
-      <div class="section-label" style="margin-bottom:6px">Task: ${task.toUpperCase()}</div>
-      <div style="font-size:12px;color:var(--fg-dim)">${taskDesc}</div>
-    </div>`;
-}
-
-// Load static pipeline diagrams when entering pipeline section
-async function loadPipelineOverview() {
-  _loadVizImage('pipe-fig1', () => api.getVizFig1(),  'Pipeline Framework');
-  _loadVizImage('pipe-fig9', () => api.getVizFig9(),  'SWT Decomposition');
-}
 
 // =============================================================================
 // SECTION 3 — REGRESSION
@@ -429,26 +208,26 @@ async function loadPipelineOverview() {
 
 async function loadRegression() {
   const ticker  = sel('reg-ticker');
-  const wavelet = sel('reg-wavelet') === 'true';
+  const wavelet = sel('reg-wavelet') === 'true';   // controls pred chart, loss curves, primary table
   const fold    = parseInt(sel('reg-fold'), 10) || 3;
   const wLabel  = wavelet ? 'With Wavelet' : 'No Wavelet';
-  document.getElementById('reg-table-label').textContent = `${ticker} · VND · ${wLabel} · ${FOLD_LABELS[fold]}`;
+
+  // Update primary table label
+  const labelEl = document.getElementById('reg-table-label');
+  if (labelEl) labelEl.textContent = `${ticker} · VND · ${wLabel} · ${FOLD_LABELS[fold]}`;
 
   ui.showSpinner('Loading regression results…');
   try {
-    // ── Comparison table (mean across folds from API) ─────────────────────
+    // ── Fetch comparison table (both conditions in one call) ──────────────
     const tbl = await api.getComparisonTable(ticker, 'VND', 'regression').catch(() => null);
-    if (tbl) _renderRegressionTable(tbl, wavelet);
+    if (tbl) _renderRegressionTable(tbl, wavelet);  // renders primary + Before/After
 
-    // ── Predicted vs Actual — collect all 5 models ────────────────────────
-    // dates có thể null với regression (chỉ classification weekly có dates)
-    // → dùng index làm X labels nếu dates không có
+    // ── Predicted vs Actual — all 5 models (selected wavelet condition) ───
     const predPromises = MODELS.map(model => {
       const expId = buildExpId(ticker, 'VND', wavelet, model, 'regression');
       return api.getPredictions(expId, fold)
         .then(r => ({
-          model,
-          wavelet,
+          model, wavelet,
           y_true: Array.isArray(r.y_true) ? r.y_true : [],
           y_pred: Array.isArray(r.y_pred) ? r.y_pred : [],
           dates : Array.isArray(r.dates) && r.dates.length ? r.dates : null,
@@ -456,14 +235,12 @@ async function loadRegression() {
         .catch(() => null);
     });
     const predResults = (await Promise.allSettled(predPromises))
-      .filter(r => r.status === 'fulfilled' && r.value && r.value.y_true.length)
+      .filter(r => r.status === 'fulfilled' && r.value?.y_true?.length)
       .map(r => r.value);
 
-    if (predResults.length > 0) {
-      charts.buildPredChart('pred-chart', predResults);
-    }
+    if (predResults.length > 0) charts.buildPredChart('pred-chart', predResults);
 
-    // ── Loss curves — one per model ────────────────────────────────────────
+    // ── Loss curves — one canvas per model ───────────────────────────────
     MODELS.forEach(async model => {
       const expId = buildExpId(ticker, 'VND', wavelet, model, 'regression');
       try {
@@ -472,48 +249,76 @@ async function loadRegression() {
           train_losses: lc.train_losses,
           val_losses  : lc.val_losses,
           best_epoch  : lc.best_epoch,
-          model_label : `${model}`,
+          model_label : model,
         });
-      } catch { /* skip if not available */ }
+      } catch { /* skip if no data */ }
     });
 
-  } catch (e) { /* toast */ }
+  } catch (e) { /* toast shown by api.js */ }
   finally { ui.hideSpinner(); }
 }
 
+/**
+ * Render regression metrics tables.
+ * Fills 3 table bodies:
+ *   1. reg-metrics-tbody  — primary: 5 models for the SELECTED wavelet condition
+ *   2. reg-tbody-before   — comparison: No Wavelet (before)
+ *   3. reg-tbody-after    — comparison: With Wavelet (after)
+ *
+ * RMSE = √MSE (computed client-side — not stored in old metrics.json).
+ * R² is NOT shown (not available in stored experiments).
+ */
 function _renderRegressionTable(tbl, showWavelet) {
-  // tbl from comparison-table API: {models, before_wavelet: {MSE,MAE,...}, after_wavelet: {...}}
-  const tbody = document.getElementById('reg-metrics-tbody');
-  if (!tbody) return;
-
-  const key   = showWavelet ? 'after_wavelet' : 'before_wavelet';
-  const data  = tbl[key];
   const models = tbl.models || MODELS;
 
+  // 1. Primary table: selected condition
+  const primaryData = showWavelet ? tbl.after_wavelet : tbl.before_wavelet;
+  _renderRegressionHalf('reg-metrics-tbody', models, primaryData);
+
+  // 2 + 3. Before/After comparison tables (always both)
+  _renderRegressionHalf('reg-tbody-before', models, tbl.before_wavelet);
+  _renderRegressionHalf('reg-tbody-after',  models, tbl.after_wavelet);
+}
+
+/**
+ * Fill one <tbody> with 5-model metrics for a single wavelet condition.
+ * @param {string}   tbodyId  DOM id of <tbody> element
+ * @param {string[]} models   Model name list (e.g. ['BiLSTM','LSTM',…])
+ * @param {Object}   data     API object: {MSE:[…], MAE:[…], MAPE:[…], …}
+ */
+function _renderRegressionHalf(tbodyId, models, data) {
+  const tbody = document.getElementById(tbodyId);
+  if (!tbody) return;
+
   if (!data) {
-    tbody.innerHTML = `<tr><td colspan="6" class="table-empty">No data for this condition.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="6" class="table-empty">No data.</td></tr>`;
     return;
   }
 
-  // Find best values per metric
+  // Compute RMSE = √MSE client-side (not stored in old metrics.json)
+  const mseArr  = data.MSE || [];
+  const rmseArr = mseArr.map(v => (v != null ? Math.sqrt(v) : null));
+  const enriched = { ...data, RMSE: rmseArr };
+
+  // metrics shown: RMSE = √MSE (client-side); R² from data if available
   const metrics = ['MSE', 'MAE', 'MAPE', 'RMSE', 'R2'];
+
+  // Find best per metric: min for MSE/MAE/MAPE/RMSE; max for R²
   const best = {};
   metrics.forEach(m => {
-    if (!data[m]) return;
-    const vals = data[m].filter(v => v != null);
-    if (m === 'R2') best[m] = Math.max(...vals);
-    else best[m] = Math.min(...vals);
+    const vals = (enriched[m] || []).filter(v => v != null && isFinite(v));
+    if (!vals.length) return;
+    best[m] = m === 'R2' ? Math.max(...vals) : Math.min(...vals);
   });
 
   tbody.innerHTML = models.map((model, i) => {
-    const row = metrics.map(m => {
-      const v = data[m]?.[i];
-      if (v == null) return '<td>—</td>';
-      const isBest = Math.abs(v - best[m]) < 1e-10;
-      const cls = isBest ? 'best-val' : '';
-      return `<td class="${cls}">${fmt(v)}</td>`;
+    const cells = metrics.map(m => {
+      const v = enriched[m]?.[i];
+      if (v == null || !isFinite(v)) return '<td>—</td>';
+      const isBest = best[m] != null && Math.abs(v - best[m]) < 1e-10;
+      return `<td class="${isBest ? 'best-val' : ''}">${fmt(v)}</td>`;
     }).join('');
-    return `<tr><td class="model-name">${model}</td>${row}</tr>`;
+    return `<tr><td class="model-name">${model}</td>${cells}</tr>`;
   }).join('');
 }
 
@@ -621,8 +426,10 @@ async function loadTrading() {
       api.getTradingResults(ticker, 'VND', fold),
     ]);
 
-    // Chart.js line chart
+    // Chart.js line chart — cache data on canvas element for tab switching
     if (tsRes.status === 'fulfilled' && tsRes.value?.data?.length) {
+      const canvas = document.getElementById('trade-chart');
+      if (canvas) canvas._tsData = tsRes.value.data;  // save for _switchTradeTab()
       charts.buildTradingLineChart('trade-chart', tsRes.value.data, _tradeWavelet);
     }
 
@@ -686,16 +493,11 @@ function attachEventListeners() {
   document.querySelectorAll('.nav-item').forEach(item => {
     item.addEventListener('click', () => {
       switchSection(item.dataset.section);
-      // Auto-load static content when entering pipeline section
-      if (item.dataset.section === 'pipeline') loadPipelineOverview();
     });
   });
 
   // Section 1: Data
   on('btn-load-data', loadData);
-
-  // Section 2: Pipeline
-  on('btn-load-arch', loadArchitecture);
 
   // Section 3: Regression
   on('btn-load-regression', loadRegression);
@@ -730,4 +532,4 @@ document.addEventListener('DOMContentLoaded', () => {
 
 // Export public methods
 window.VNSP = window.VNSP || {};
-window.VNSP.main = { switchSection, loadData, loadArchitecture, loadRegression, loadClassification, loadTrading };
+window.VNSP.main = { switchSection, loadData, loadRegression, loadClassification, loadTrading };

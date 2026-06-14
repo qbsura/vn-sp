@@ -323,3 +323,167 @@ code, pre, .mono { font-family: 'IBM Plex Mono', 'Fira Code', monospace; }
   font-size: 11px; text-transform: uppercase; letter-spacing: .8px;
   color: var(--fg-dim); padding: 8px 0 4px; border-bottom: 1px solid var(--border); margin-bottom: 12px;
 }
+
+/* =============================================================================
+   NEURAL NETWORK ARCHITECTURE DIAGRAM
+   Used by Pipeline Analysis section — renders per-model visual architecture.
+   ============================================================================= */
+
+/* Main container — vertical flow, centered */
+.nn-diagram {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  width: 100%;
+  padding: 12px 8px 4px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+/* Feature name pills (input feature labels) */
+.nn-feats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  justify-content: center;
+  margin: 6px 0 4px;
+  max-width: 680px;
+}
+
+.nn-feat {
+  padding: 3px 9px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  border: 1px solid;
+  white-space: nowrap;
+}
+
+.nn-feat.approx {
+  background: rgba(100, 181, 246, 0.14);
+  border-color: rgba(100, 181, 246, 0.55);
+  color: #64b5f6;
+}
+
+.nn-feat.detail {
+  background: rgba(255, 167, 38, 0.13);
+  border-color: rgba(255, 167, 38, 0.55);
+  color: #ffa726;
+}
+
+.nn-feat.raw {
+  background: rgba(207, 216, 220, 0.09);
+  border-color: rgba(207, 216, 220, 0.35);
+  color: #cfd8dc;
+}
+
+/* Layer blocks — shared base */
+.nn-block {
+  border: 1.5px solid;
+  border-radius: 7px;
+  padding: 9px 18px;
+  text-align: center;
+  min-width: 200px;
+  max-width: 340px;
+  width: 100%;
+}
+
+.nn-block-tag {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  opacity: 0.6;
+  margin-bottom: 3px;
+}
+
+.nn-block-name {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--fg);
+  margin-bottom: 4px;
+  line-height: 1.35;
+}
+
+.nn-block-dim {
+  font-size: 10px;
+  color: var(--fg-dim);
+  line-height: 1.5;
+}
+
+/* Block type colours */
+.nn-block.input-blk   { border-color: var(--border2); background: var(--bg3); }
+.nn-block.bilstm-blk  { border-color: rgba(100,181,246,.6); background: rgba(100,181,246,.07); }
+.nn-block.lstm-blk    { border-color: rgba(255,167,38,.55); background: rgba(255,167,38,.06); }
+.nn-block.gru-blk     { border-color: rgba(102,187,106,.55); background: rgba(102,187,106,.06); }
+.nn-block.rnn-blk     { border-color: rgba(239,83,80,.45);  background: rgba(239,83,80,.05);  }
+.nn-block.dnn-blk     { border-color: rgba(206,147,216,.55); background: rgba(206,147,216,.07); }
+.nn-block.fc-blk      { border-color: rgba(255,255,255,.15); background: var(--bg3); }
+.nn-block.concat-blk  { border-color: rgba(206,147,216,.55); background: rgba(206,147,216,.07); border-style: dashed; }
+.nn-block.output-blk  { border-color: rgba(233,69,96,.65);  background: rgba(233,69,96,.09);  }
+
+/* Vertical connector arrows */
+.nn-arrow {
+  color: var(--border2);
+  font-size: 16px;
+  line-height: 1.1;
+  margin: 1px 0;
+  user-select: none;
+  letter-spacing: 2px;
+}
+
+/* Dual-branch layout (BiLSTM wavelet) */
+.nn-branches {
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 14px;
+  width: 100%;
+  max-width: 680px;
+  margin: 4px 0;
+}
+
+.nn-branch {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+
+.nn-branch-label {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 3px 10px;
+  border-radius: 4px;
+  text-align: center;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.nn-branch-label.approx { background: rgba(100,181,246,.14); color: #64b5f6; }
+.nn-branch-label.detail { background: rgba(255,167,38,.13);  color: #ffa726; }
+
+.nn-merge-sym {
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--fg-dim);
+  align-self: center;
+  margin-top: 64px; /* vertically center next to BiLSTM blocks */
+  flex-shrink: 0;
+}
+
+/* Hyperparameter chip row */
+.nn-params-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: center;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+  width: 100%;
+  max-width: 680px;
+}

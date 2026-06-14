@@ -530,7 +530,9 @@ def run_all_experiments(
             # ── Load best_params ──────────────────────────────────────────────
             # BiLSTM: best_params từ HPO của chính nó
             # DNN/RNN/GRU/LSTM: best_params từ BiLSTM HPO (cùng fold/cond)
-            best_params = load_best_params(ticker, currency, use_wavelet, fold_idx)
+            # Classification: ưu tiên best_params_classification.json nếu tồn tại,
+            #                 fallback sang best_params.json (regression params)
+            best_params = load_best_params(ticker, currency, use_wavelet, fold_idx, task=task)
 
             # ── Run experiment ────────────────────────────────────────────────
             result = run_single_experiment(

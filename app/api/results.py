@@ -7,11 +7,13 @@ Endpoints:
   GET /api/results/summary                      → tất cả kết quả (DataFrame → JSON)
   GET /api/results/comparison-table             → Table 1 bài báo (5 models × before/after)
   GET /api/results/best-models                  → best model per condition
+  GET /api/results/vnd-vs-usd                   → VND vs USD comparison
   GET /api/results/{exp_id}/predictions         → y_true và y_pred cho visualization
   GET /api/results/{exp_id}/classification-report → Accuracy, F1, AUC per fold  ← Task 7.4
   GET /api/results/{exp_id}/confusion-matrix    → raw confusion matrix data       ← Task 7.4
   GET /api/results/{exp_id}/roc-curve           → FPR, TPR, thresholds            ← Task 7.4
-  GET /api/results/trading/{ticker}/{currency}  → trading simulation results
+  GET /api/results/trading/{ticker}/{currency}            → trading simulation results (summary)
+  GET /api/results/trading/{ticker}/{currency}/timeseries → time-series data cho Chart.js
 
 Routing order: FastAPI ưu tiên literal paths trước parameterized paths,
 nên /summary, /comparison-table, /best-models, /vnd-vs-usd không bị
@@ -182,6 +184,56 @@ def get_best_models(
 
     records = best.where(best.notna(), None).to_dict(orient="records")
     return {"n_rows": len(records), "data": records}
+
+
+# =============================================================================
+# VND vs USD COMPARISON
+# =============================================================================
+
+@router.get("/vnd-vs-usd", summary="VND vs USD comparison table")
+def get_vnd_vs_usd(
+    ticker: Optional[str] = Query(None),
+    task  : Optional[str] = Query(None),
+) -> dict:
+    """
+    So sánh metrics của VND vs USD cho cùng ticker/model/condition.
+
+    Returns:
+        {"n_rows": int, "columns": list, "data": list[dict]}
+    """
+    from app.services.evaluation_service import load_all_results, compare_vnd_vs_usd
+
+    df = load_all_results()
+    if df.empty:
+        return {"n_rows": 0, "columns": [], "data": []}
+
+    if ticker:
+        df = df[df["ticker"] == ticker]
+    if task:
+        df = df[df["task"] == task]
+
+    comp = compare_vnd_vs_usd(df)
+    if comp.empty:
+        return {"n_rows": 0, "columns": [], "data": []}
+
+    # Flatten MultiIndex columns → "VND_MSE", "USD_MSE", "Delta_MSE" etc.
+    flat_cols = []
+    for col in comp.columns:
+        if isinstance(col, tuple):
+            top, sub = col
+            if top == "":
+                flat_cols.append(sub)
+            else:
+                flat_cols.append(
+                    f"{top}_{sub}".replace(" ", "_").replace("(", "").replace(")", "")
+                )
+        else:
+            flat_cols.append(str(col))
+    comp.columns = flat_cols
+
+    records = comp.where(comp.notna(), None).to_dict(orient="records")
+    return {"n_rows": len(records), "columns": flat_cols, "data": records}
+
 
 # =============================================================================
 # PREDICTIONS (cho visualization)
@@ -519,6 +571,114 @@ def get_trading_results(
 
 
 # =============================================================================
+# TRADING TIME-SERIES — Chart.js interactive cumulative return chart
+# =============================================================================
+
+@router.get("/trading/{ticker}/{currency}/timeseries",
+            summary="Trading cumulative return time-series for Chart.js")
+def get_trading_timeseries(
+    ticker  : str,
+    currency: str,
+    fold_idx: int = Query(3, ge=1, le=3),
+) -> dict:
+    """
+    Trả về chuỗi thời gian Strategy_Cumulative + BuyHold_Cumulative
+    cho tất cả 5 models × 2 wavelet conditions.
+
+    Khác với /trading/{t}/{c} chỉ trả summary metrics, endpoint này trả
+    toàn bộ chuỗi thời gian để frontend vẽ Chart.js line chart tương tác.
+
+    Returns:
+        {"ticker", "currency", "fold_idx",
+         "data": [
+           {"model": str, "use_wavelet": bool,
+            "dates":    list[str],   ← F_W dates (ISO "YYYY-MM-DD")
+            "strategy": list[float], ← Strategy_Cumulative (1.0 = initial capital)
+            "buyhold":  list[float], ← BuyHold_Cumulative
+           }, ...
+         ]}
+    """
+    import numpy as np
+    import pandas as pd
+
+    _validate_ticker(ticker)
+    _validate_currency(currency)
+
+    from app.config import MODELS, FOLDS
+    from app.services.trading_service import _load_processed_df, simulate_trading_weekly
+
+    # Validate fold
+    fold_map = {f["fold_id"]: f for f in FOLDS}
+    if fold_idx not in fold_map:
+        raise HTTPException(
+            status_code=400,
+            detail=f"fold_idx={fold_idx} không hợp lệ. Chọn: {list(fold_map.keys())}",
+        )
+
+    results = []
+
+    for use_wavelet in [True, False]:
+        cond_str = "wavelet" if use_wavelet else "nowave"
+        pkl_path = Path(PATHS["processed"]) / f"{ticker}_{currency}_{cond_str}.pkl"
+
+        # Load processed DataFrame to get Close price series
+        try:
+            df_full      = _load_processed_df(pkl_path)
+            close_series = df_full["Close"].astype(np.float64)
+        except Exception as exc:
+            logger.warning("timeseries: cannot load pkl %s — %s", pkl_path.name, exc)
+            continue
+
+        for model_name in MODELS:
+            exp_id   = f"{ticker}_{currency}_{cond_str}_{model_name}_classification"
+            npz_path = _EXPERIMENTS_DIR / exp_id / f"fold_{fold_idx}" / "predictions.npz"
+
+            if not npz_path.exists():
+                logger.debug("timeseries: npz missing %s", npz_path)
+                continue
+
+            try:
+                npz_data = np.load(str(npz_path), allow_pickle=False)
+
+                # Weekly Task B predictions must have "dates" key
+                if "dates" not in npz_data.files:
+                    logger.warning("timeseries: no 'dates' key in %s", npz_path)
+                    continue
+
+                y_pred    = npz_data["y_pred"].astype(np.int32).flatten()
+                f_w_dates = pd.DatetimeIndex(npz_data["dates"])
+
+                # Run trading simulation (weekly, Phương án D)
+                trade_df = simulate_trading_weekly(
+                    y_pred          = y_pred,
+                    f_w_dates       = f_w_dates.values,
+                    close_series    = close_series,
+                    initial_capital = 1.0,
+                )
+
+                results.append({
+                    "model"      : model_name,
+                    "use_wavelet": use_wavelet,
+                    # F_W dates as ISO strings for Chart.js X axis
+                    "dates"   : [str(d.date()) for d in trade_df["Date"]],
+                    # Cumulative factor (1.0 = no gain/loss)
+                    "strategy": [round(float(v), 6) for v in trade_df["Strategy_Cumulative"]],
+                    "buyhold" : [round(float(v), 6) for v in trade_df["BuyHold_Cumulative"]],
+                })
+
+            except Exception as exc:
+                logger.warning("timeseries: error %s %s fold%d — %s",
+                               model_name, cond_str, fold_idx, exc)
+
+    return {
+        "ticker"  : ticker,
+        "currency": currency,
+        "fold_idx": fold_idx,
+        "data"    : results,
+    }
+
+
+# =============================================================================
 # HELPERS
 # =============================================================================
 
@@ -535,102 +695,3 @@ def _validate_currency(currency: str) -> None:
             status_code=400,
             detail=f"currency='{currency}' không hợp lệ. Chọn từ: {CURRENCIES}",
         )
-
-# =============================================================================
-# TRADING TIME-SERIES (dùng cho Chart.js interactive trading chart)
-# =============================================================================
-
-@router.get("/trading/{ticker}/{currency}/timeseries",
-            summary="Trading cumulative return time-series for Chart.js")
-def get_trading_timeseries(
-    ticker  : str,
-    currency: str,
-    fold_idx: int = Query(3, ge=1, le=3),
-) -> dict:
-    """
-    Trả về chuỗi thời gian Strategy_Cumulative và BuyHold_Cumulative
-    cho Chart.js interactive line chart.
-
-    Chạy simulate_trading_weekly() cho tất cả 5 models × 2 wavelet conditions.
-    Khác với endpoint /trading/{t}/{c} chỉ trả summary metrics, endpoint
-    này trả toàn bộ chuỗi thời gian để frontend vẽ chart tương tác.
-
-    Returns:
-        {"ticker": str, "currency": str, "fold_idx": int,
-         "data": [
-           {"model": str, "use_wavelet": bool,
-            "dates": list[str],          ← F_W dates (ISO)
-            "strategy": list[float],     ← Strategy_Cumulative (1.0 = initial)
-            "buyhold":  list[float],     ← BuyHold_Cumulative
-           }, ...
-         ]}
-    """
-    import pickle
-    import numpy as np
-    import pandas as pd
-
-    _validate_ticker(ticker)
-    _validate_currency(currency)
-
-    from app.config import MODELS, FOLDS
-    from app.services.trading_service import (
-        _load_processed_df, simulate_trading_weekly, TRADING_WEEKS_PER_YEAR
-    )
-
-    fold_map = {f["fold_id"]: f for f in FOLDS}
-    if fold_idx not in fold_map:
-        raise HTTPException(status_code=400, detail=f"fold_idx={fold_idx} không hợp lệ.")
-
-    results = []
-
-    for use_wavelet in [True, False]:
-        cond_str = "wavelet" if use_wavelet else "nowave"
-        pkl_path = _EXPERIMENTS_DIR.parent / "data" / "processed" / f"{ticker}_{currency}_{cond_str}.pkl"
-
-        # Try to load pkl for Close prices
-        try:
-            from app.config import PATHS
-            from pathlib import Path
-            pkl_path = Path(PATHS["processed"]) / f"{ticker}_{currency}_{cond_str}.pkl"
-            df_full = _load_processed_df(pkl_path)
-            close_series = df_full["Close"].astype(np.float64)
-        except Exception:
-            continue
-
-        for model_name in MODELS:
-            exp_id   = f"{ticker}_{currency}_{cond_str}_{model_name}_classification"
-            npz_path = _EXPERIMENTS_DIR / exp_id / f"fold_{fold_idx}" / "predictions.npz"
-
-            if not npz_path.exists():
-                continue
-
-            try:
-                npz_data  = np.load(str(npz_path), allow_pickle=False)
-                if "dates" not in npz_data.files:
-                    continue
-                y_pred    = npz_data["y_pred"].astype(np.int32).flatten()
-                f_w_dates = pd.DatetimeIndex(npz_data["dates"])
-
-                trade_df = simulate_trading_weekly(
-                    y_pred       = y_pred,
-                    f_w_dates    = f_w_dates.values,
-                    close_series = close_series,
-                    initial_capital = 1.0,
-                )
-                results.append({
-                    "model"       : model_name,
-                    "use_wavelet" : use_wavelet,
-                    "dates"       : [str(d.date()) for d in trade_df["Date"]],
-                    "strategy"    : [round(float(v), 6) for v in trade_df["Strategy_Cumulative"]],
-                    "buyhold"     : [round(float(v), 6) for v in trade_df["BuyHold_Cumulative"]],
-                })
-            except Exception as exc:
-                logger.warning("timeseries error %s %s: %s", model_name, cond_str, exc)
-                continue
-
-    return {
-        "ticker"  : ticker,
-        "currency": currency,
-        "fold_idx": fold_idx,
-        "data"    : results,
-    }

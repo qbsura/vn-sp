@@ -38,9 +38,6 @@
       <li class="nav-item active" data-section="data">
         <span class="nav-icon">📊</span> Data
       </li>
-      <li class="nav-item" data-section="pipeline">
-        <span class="nav-icon">🔬</span> Pipeline
-      </li>
       <li class="nav-item" data-section="regression">
         <span class="nav-icon">📈</span> Regression
       </li>
@@ -247,106 +244,7 @@
       </section><!-- /data -->
 
 
-      <!-- ================================================================ -->
-      <!-- SECTION 2: PIPELINE ANALYSIS                                       -->
-      <!-- ================================================================ -->
-      <section id="section-pipeline" class="content-section">
-        <div class="section-header">
-          <div class="section-title">Pipeline Analysis</div>
-          <div class="section-desc">Architecture &amp; processing flow · hyperparameters from best_params.json</div>
-        </div>
 
-        <!-- Static overview diagrams -->
-        <div class="plot-grid">
-          <div class="plot-card">
-            <div class="plot-card-header">
-              <div class="plot-card-title">System Pipeline Framework</div>
-              <div class="plot-card-desc">End-to-end architecture (Fig. 1 from paper)</div>
-            </div>
-            <div class="plot-card-body">
-              <div class="img-container" id="pipe-fig1">
-                <div class="img-placeholder">Loading…</div>
-              </div>
-            </div>
-          </div>
-          <div class="plot-card">
-            <div class="plot-card-header">
-              <div class="plot-card-title">Level-1 SWT Decomposition</div>
-              <div class="plot-card-desc">db4 wavelet → A1 (Approx) + D1 (Detail)</div>
-            </div>
-            <div class="plot-card-body">
-              <div class="img-container" id="pipe-fig9">
-                <div class="img-placeholder">Loading…</div>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <!-- Architecture selector -->
-        <div class="controls-bar mt-12">
-          <div class="control-group">
-            <label class="control-label">Ticker</label>
-            <select class="select" style="width:145px;" id="pipe-ticker">
-              <option value="VCB">VCB</option>
-              <option value="VIC">VIC</option>
-            </select>
-          </div>
-          <div class="control-group">
-            <label class="control-label">Model</label>
-            <select class="select" style="width:145px;" id="pipe-model">
-              <option value="BiLSTM">BiLSTM</option>
-              <option value="LSTM">LSTM</option>
-              <option value="GRU">GRU</option>
-              <option value="RNN">RNN</option>
-              <option value="DNN">DNN</option>
-            </select>
-          </div>
-          <div class="control-group">
-            <label class="control-label">Task</label>
-            <select class="select" style="width:145px;" id="pipe-task">
-              <option value="regression">Regression</option>
-              <option value="classification">Classification</option>
-            </select>
-          </div>
-          <div class="control-group">
-            <label class="control-label">Wavelet</label>
-            <select class="select" style="width:145px;" id="pipe-wavelet">
-              <option value="true">With Wavelet</option>
-              <option value="false">No Wavelet</option>
-            </select>
-          </div>
-          <div class="control-group">
-            <label class="control-label">Fold (params)</label>
-            <select class="select" style="width:145px;" id="pipe-fold">
-              <option value="1">Fold 1 (2018)</option>
-              <option value="2">Fold 2 (2020)</option>
-              <option value="3" selected>Fold 3 (2022–24)</option>
-            </select>
-          </div>
-          <button class="btn btn-primary" id="btn-load-arch">Load Architecture</button>
-        </div>
-
-        <!-- Architecture display area -->
-        <div class="card" id="arch-card">
-          <div class="card-header">
-            <span class="card-title" id="arch-title">Architecture — select model and click Load</span>
-          </div>
-          <div class="card-body" id="arch-body">
-            <div class="loading-placeholder">Select model, task and wavelet condition, then click "Load Architecture".</div>
-          </div>
-        </div>
-
-        <!-- Data flow description -->
-        <div class="card" id="flow-card">
-          <div class="card-header">
-            <span class="card-title">Data Processing Pipeline</span>
-          </div>
-          <div class="card-body" id="flow-body">
-            <div class="loading-placeholder">Load Architecture to see data flow.</div>
-          </div>
-        </div>
-
-      </section><!-- /pipeline -->
 
 
       <!-- ================================================================ -->
@@ -384,7 +282,7 @@
           <button class="btn btn-primary" id="btn-load-regression">Load Results</button>
         </div>
 
-        <!-- Table 1: 5 models × metrics (Before vs After Wavelet combined in wavelet selector) -->
+        <!-- Primary: 5-model metrics for selected wavelet condition -->
         <div class="card">
           <div class="card-header">
             <span class="card-title">Performance Comparison — 5 Models</span>
@@ -407,6 +305,60 @@
           </div>
         </div>
 
+        <!-- Secondary: Before vs After Wavelet side-by-side comparison (Table 1 paper) -->
+        <!-- RMSE computed client-side = √MSE; R² shown in primary table above -->
+        <div class="card">
+          <div class="card-header">
+            <span class="card-title">Before vs After Wavelet — Table 1 (aggregated 3 folds)</span>
+            <span class="text-dim" style="font-size:11px">RMSE = √MSE (client-side) · ↓ lower is better · best per column in <span class="best-val" style="padding:1px 4px">green</span></span>
+          </div>
+          <div class="card-body no-pad">
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:0;border-top:1px solid var(--border)">
+
+              <!-- Before Wavelet column -->
+              <div style="border-right:1px solid var(--border)">
+                <div style="padding:8px 12px;font-size:11px;font-weight:600;color:var(--fg-dim);background:var(--bg3);border-bottom:1px solid var(--border)">
+                  ⬜ Before Wavelet (No SWT)
+                </div>
+                <div class="table-wrapper">
+                  <table class="metrics-table">
+                    <thead>
+                      <tr>
+                        <th class="model-col">Model</th>
+                        <th>MSE ↓</th><th>MAE ↓</th><th>MAPE ↓</th><th>RMSE ↓</th>
+                      </tr>
+                    </thead>
+                    <tbody id="reg-tbody-before">
+                      <tr><td colspan="5" class="table-empty">Click "Load Results"</td></tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              <!-- After Wavelet column -->
+              <div>
+                <div style="padding:8px 12px;font-size:11px;font-weight:600;color:var(--blue);background:var(--bg3);border-bottom:1px solid var(--border)">
+                  🔷 After Wavelet (SWT db4 Level-1)
+                </div>
+                <div class="table-wrapper">
+                  <table class="metrics-table">
+                    <thead>
+                      <tr>
+                        <th class="model-col">Model</th>
+                        <th>MSE ↓</th><th>MAE ↓</th><th>MAPE ↓</th><th>RMSE ↓</th>
+                      </tr>
+                    </thead>
+                    <tbody id="reg-tbody-after">
+                      <tr><td colspan="5" class="table-empty">Click "Load Results"</td></tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+            </div>
+          </div>
+        </div>
+
         <!-- Predicted vs Actual (all 5 models overlay) -->
         <div class="card">
           <div class="card-header">
@@ -420,18 +372,19 @@
           </div>
         </div>
 
-        <!-- Loss Curves: 5 models in 1-row or 2-row grid -->
+        <!-- Loss Curves: 5 models — 2 per row (3 rows), taller for readability -->
         <div class="card">
           <div class="card-header">
             <span class="card-title">Training Loss Curves — All Models</span>
+            <span class="text-dim" style="font-size:11px">Double-click chart to reset zoom</span>
           </div>
           <div class="card-body">
-            <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:10px">
-              <div class="chart-container" style="height:160px"><canvas id="loss-chart-bilstm"></canvas></div>
-              <div class="chart-container" style="height:160px"><canvas id="loss-chart-lstm"></canvas></div>
-              <div class="chart-container" style="height:160px"><canvas id="loss-chart-gru"></canvas></div>
-              <div class="chart-container" style="height:160px"><canvas id="loss-chart-rnn"></canvas></div>
-              <div class="chart-container" style="height:160px"><canvas id="loss-chart-dnn"></canvas></div>
+            <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:14px">
+              <div class="chart-container" style="height:220px"><canvas id="loss-chart-bilstm"></canvas></div>
+              <div class="chart-container" style="height:220px"><canvas id="loss-chart-lstm"></canvas></div>
+              <div class="chart-container" style="height:220px"><canvas id="loss-chart-gru"></canvas></div>
+              <div class="chart-container" style="height:220px"><canvas id="loss-chart-rnn"></canvas></div>
+              <div class="chart-container" style="height:220px"><canvas id="loss-chart-dnn"></canvas></div>
             </div>
           </div>
         </div>
@@ -615,6 +568,9 @@
 
 <!-- ── Scripts ───────────────────────────────────────────────────────────────── -->
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.2/dist/chart.umd.min.js"></script>
+<!-- hammerjs must load BEFORE chartjs-plugin-zoom (peer dependency for pinch/pan) -->
+<script src="https://cdn.jsdelivr.net/npm/hammerjs@2.0.8/hammer.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.0.1/dist/chartjs-plugin-zoom.min.js"></script>
 <script src="/static/js/api.js"></script>
 <script src="/static/js/charts.js"></script>
 <script src="/static/js/main.js"></script>
