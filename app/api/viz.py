@@ -929,42 +929,6 @@ def get_fig_classification_table(
         "wavelet" : wavelet,
     }
 
-
-@router.get("/fig-vnd-vs-usd",
-            summary="VND vs USD side-by-side metric comparison table")
-def get_fig_vnd_vs_usd_table(
-    model_name: str = Query("BiLSTM",
-                            description="DNN, RNN, GRU, LSTM, hoặc BiLSTM"),
-) -> dict:
-    """
-    Matplotlib table figure: so sánh VND và USD side-by-side cho model chỉ định.
-
-    Rows: (ticker, wavelet_condition, task)
-    Columns: metric × (VND, USD, Δ USD−VND)
-    Delta column: xanh = USD tốt hơn; đỏ = VND tốt hơn.
-
-    Returns:
-        {"image": "data:image/png;base64,...", "model_name": str}
-    """
-    from app.config import MODELS
-    if model_name not in MODELS:
-        raise HTTPException(
-            status_code=400,
-            detail=f"model_name='{model_name}' không hợp lệ. Chọn từ: {MODELS}",
-        )
-
-    from app.services.viz_service import fig_vnd_vs_usd_table
-    try:
-        fig = fig_vnd_vs_usd_table(model_name)
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc))
-    except Exception as exc:
-        logger.error("fig_vnd_vs_usd_table error: %s", exc)
-        raise HTTPException(status_code=500, detail=f"Lỗi generate table: {exc}")
-
-    return {"image": _fig_to_base64(fig), "model_name": model_name}
-
-
 @router.get("/fig-walkforward",
             summary="Walk-forward stability chart cho một experiment cụ thể")
 def get_fig_walkforward_stability(

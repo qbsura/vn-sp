@@ -1,30 +1,29 @@
 """
 scripts/preprocess.py
 ======================
-Standalone script — tạo processed data cho tất cả 8 combinations.
+Standalone script — tạo processed data cho tất cả 4 combinations.
 
 Chạy: uv run python scripts/preprocess.py
 
-Pipeline cho mỗi combination (ticker × currency × wavelet_condition):
+Pipeline cho mỗi combination (ticker × wavelet_condition):
   1. Load raw data từ CSV (không gọi API)
-  2. Convert sang USD nếu cần (dùng USDVND.csv)
-  3. Add Deviation feature (Close - Open)
-  4. Nếu use_wavelet=True:
+  2. Add Deviation feature (Close - Open)
+  3. Nếu use_wavelet=True:
        a. Apply SWT db4 level-1 → 10 wavelet coefficients + Close (11 cols)
        b. Feature selection by correlation (threshold=0.95)
           → fit trên Fold 1 training data (2012–2017) để tránh data leakage
           → áp dụng kết quả lên toàn bộ dataset
      Nếu use_wavelet=False:
        Giữ 6 cột: Open, High, Low, Volume, Deviation (features) + Close (target)
-  5. Lưu pkl: {"df": df_processed, "feature_cols": list, "target_col": "Close"}
+  4. Lưu pkl: {"df": df_processed, "feature_cols": list, "target_col": "Close"}
 
-Output: data/processed/{ticker}_{currency}_{wavelet|nowave}.pkl
+Output: data/processed/{ticker}_VND_{wavelet|nowave}.pkl
 
-8 combinations tổng cộng:
+4 combinations tổng cộng:
   VCB_VND_wavelet, VCB_VND_nowave
-  VCB_USD_wavelet, VCB_USD_nowave
   VIC_VND_wavelet, VIC_VND_nowave
-  VIC_USD_wavelet, VIC_USD_nowave
+
+Ghi chú: Chỉ hỗ trợ VND — USD đã bị loại theo yêu cầu giảng viên.
 """
 
 import logging
@@ -50,7 +49,7 @@ from app.config import (
     TICKERS,
     WAVELET_CONDITIONS,
 )
-from app.services.data_service import convert_to_usd, load_stock_data, load_usdvnd
+from app.services.data_service import load_stock_data
 from app.services.preprocessing import (
     add_deviation_feature,
     select_features_by_correlation,
@@ -77,7 +76,7 @@ FOLD1_TRAIN_END: str = FOLDS[0]["train_end"]  # "2017-12-31"
 # Input features cho no-wavelet case (Close là target, không tính là feature)
 RAW_FEATURE_COLS: list[str] = ["Open", "High", "Low", "Volume", "Deviation"]
 
-# Columns chuẩn OHLCV + Deviation — dùng để lọc sau convert/add_deviation
+# Columns chuẩn OHLCV + Deviation — dùng để lọc sau add_deviation
 BASE_COLS: list[str] = ["Open", "High", "Low", "Close", "Volume", "Deviation"]
 
 
@@ -91,15 +90,14 @@ def run_preprocessing(ticker: str, currency: str, use_wavelet: bool) -> dict:
 
     Quy trình:
       1. Load raw CSV → DataFrame (index=Date, cols=OHLCV)
-      2. Convert VND→USD nếu cần (dùng USDVND.csv)
-      3. Thêm Deviation = Close - Open
-      4a. Wavelet: SWT decompose → feature selection → df_processed
-      4b. No-wavelet: select 6 raw cols → df_processed
-      5. Trả về dict để lưu pkl
+      2. Thêm Deviation = Close - Open
+      3a. Wavelet: SWT decompose → feature selection → df_processed
+      3b. No-wavelet: select 6 raw cols → df_processed
+      4. Trả về dict để lưu pkl
 
     Args:
         ticker:      Mã cổ phiếu ("VCB" hoặc "VIC").
-        currency:    Đơn vị tiền tệ ("VND" hoặc "USD").
+        currency:    Đơn vị tiền tệ — luôn là "VND".
         use_wavelet: True → pipeline SWT + feature selection.
                      False → giữ 6 raw features.
 
@@ -111,7 +109,7 @@ def run_preprocessing(ticker: str, currency: str, use_wavelet: bool) -> dict:
           "target_col"  : "Close" (giá đóng cửa ngày t+1, mục tiêu dự báo).
 
     Raises:
-        FileNotFoundError: Nếu CSV raw chưa tồn tại hoặc USDVND.csv thiếu.
+        FileNotFoundError: Nếu CSV raw chưa tồn tại.
         KeyError:          Nếu columns cần thiết không có.
     """
     label = f"{ticker}_{currency}_{'wavelet' if use_wavelet else 'nowave'}"
@@ -122,17 +120,9 @@ def run_preprocessing(ticker: str, currency: str, use_wavelet: bool) -> dict:
     logger.info(f"[{label}] Loaded {len(df_raw):,} rows | "
                 f"{df_raw.index[0].date()} → {df_raw.index[-1].date()}")
 
-    # ── Bước 2: Convert currency nếu cần ─────────────────────────────────────
-    if currency == "USD":
-        df_fx = load_usdvnd()
-        df = convert_to_usd(df_raw, df_fx)
-        # convert_to_usd thêm cột 'currency'='USD' dùng để đánh dấu
-        # → drop trước khi xử lý tiếp (không phải feature)
-        df = df.drop(columns=["currency"], errors="ignore")
-    else:
-        df = df_raw.copy()
+    df = df_raw.copy()
 
-    # ── Bước 3: Thêm Deviation feature ───────────────────────────────────────
+    # ── Bước 2: Thêm Deviation feature ───────────────────────────────────────
     df = add_deviation_feature(df)
 
     # Chỉ giữ các cột chuẩn (loại bỏ cột thừa nếu có từ data source)
@@ -142,7 +132,7 @@ def run_preprocessing(ticker: str, currency: str, use_wavelet: bool) -> dict:
     if missing_base:
         raise KeyError(f"[{label}] Thiếu columns sau add_deviation: {missing_base}")
 
-    # ── Bước 4: Wavelet hoặc No-wavelet ──────────────────────────────────────
+    # ── Bước 3: Wavelet hoặc No-wavelet ──────────────────────────────────────
     if use_wavelet:
         df_processed, feature_cols = _pipeline_wavelet(df, label)
     else:
@@ -181,14 +171,14 @@ def _pipeline_wavelet(df: pd.DataFrame, label: str) -> tuple[pd.DataFrame, list[
 
     Args:
         df:    DataFrame OHLCV + Deviation (chưa decompose).
-        label: Nhãn log (ticker_currency_wavelet).
+        label: Nhãn log (ticker_VND_wavelet).
 
     Returns:
         (df_processed, feature_cols):
           df_processed: DataFrame với wavelet features đã select + Close.
           feature_cols: List tên các input features được giữ.
     """
-    # 4a. Apply SWT db4 level-1 cho 5 features (Open, High, Low, Volume, Deviation)
+    # 3a. Apply SWT db4 level-1 cho 5 features (Open, High, Low, Volume, Deviation)
     # → 10 wavelet coefficients (Approx + Detail × 5) + Close (giữ nguyên)
     logger.info(f"[{label}] SWT decompose...")
     df_wav = decompose_all_features(df)
@@ -196,7 +186,7 @@ def _pipeline_wavelet(df: pd.DataFrame, label: str) -> tuple[pd.DataFrame, list[
     #   Open_Approx, Open_Detail, High_Approx, High_Detail, Low_Approx, Low_Detail,
     #   Volume_Approx, Volume_Detail, Deviation_Approx, Deviation_Detail, Close
 
-    # 4b. Feature selection by correlation
+    # 3b. Feature selection by correlation
     #     → fit trên Fold 1 train data (đến 2017-12-31) để tránh leakage
     df_fold1_train = df_wav.loc[:FOLD1_TRAIN_END]
 
@@ -273,12 +263,12 @@ def save_pickle(
     Lưu processed data dict ra file pkl.
 
     Naming convention: {ticker}_{currency}_{wavelet|nowave}.pkl
-    Ví dụ: VCB_VND_wavelet.pkl, VIC_USD_nowave.pkl
+    Ví dụ: VCB_VND_wavelet.pkl, VIC_VND_nowave.pkl
 
     Args:
         data:        Dict {"df": ..., "feature_cols": ..., "target_col": ...}.
         ticker:      Mã cổ phiếu.
-        currency:    Tiền tệ.
+        currency:    Tiền tệ (luôn là "VND").
         use_wavelet: True → "wavelet", False → "nowave".
 
     Returns:
@@ -303,16 +293,16 @@ def save_pickle(
 
 def main() -> None:
     """
-    Chạy toàn bộ 8 combinations, in tiến độ và bảng tóm tắt cuối cùng.
+    Chạy toàn bộ 4 combinations (2T × 1C × 2W), in tiến độ và bảng tóm tắt.
     """
     combos = list(product(TICKERS, CURRENCIES, WAVELET_CONDITIONS))
     n_combos = len(combos)
 
     print("\n" + "=" * 72)
-    print("VNSP — Phase 2: Preprocessing Pipeline (Task 2.6)")
+    print("VNSP — Phase 2: Preprocessing Pipeline (VND only)")
     print("=" * 72)
     print(f"Output dir    : {PROCESSED_DIR.resolve()}")
-    print(f"Combinations  : {len(TICKERS)} tickers × {len(CURRENCIES)} currencies "
+    print(f"Combinations  : {len(TICKERS)} tickers × {len(CURRENCIES)} currency "
           f"× {len(WAVELET_CONDITIONS)} wavelet conditions = {n_combos}")
     print(f"Fold 1 cutoff : {FOLD1_TRAIN_END} (dùng cho feature selection)")
     print(f"Corr threshold: {CORRELATION_THRESHOLD}")
@@ -404,7 +394,7 @@ def main() -> None:
         print(f"   Kiểm tra: {PROCESSED_DIR.resolve()}")
         print()
         print("Bước tiếp theo:")
-        print("  uv run python scripts/train.py  (Phase 3 — Model Training)")
+        print("  uv run python scripts/run_experiments.py  (Phase 4 — Experiments)")
     else:
         print()
         print(f"⚠️  {n_err} combination(s) bị lỗi. Xem log chi tiết ở trên.")

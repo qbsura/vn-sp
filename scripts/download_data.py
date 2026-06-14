@@ -6,11 +6,12 @@ Standalone script — tải và kiểm tra toàn bộ raw data files.
 Chạy: uv run python scripts/download_data.py
 
 Logic:
-  1. Kiểm tra USDVND.csv (phải tải thủ công) — nếu thiếu: in hướng dẫn và exit
-  2. Kiểm tra VCB_raw.csv / VIC_raw.csv — nếu thiếu: tải từ vnstock
-  3. Nếu đã có tất cả: bỏ qua download, chỉ in summary
-  4. In summary table cuối cùng
-  5. In hướng dẫn bước tiếp theo
+  1. Kiểm tra VCB_raw.csv / VIC_raw.csv — nếu thiếu: tải từ vnstock
+  2. Nếu đã có tất cả: bỏ qua download, chỉ in summary
+  3. In summary table cuối cùng
+  4. In hướng dẫn bước tiếp theo
+
+Ghi chú: USDVND.csv không còn cần thiết — chỉ hỗ trợ VND.
 """
 
 import sys
@@ -38,40 +39,11 @@ logger = logging.getLogger(__name__)
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 RAW_DIR = Path(PATHS["raw"])
-USDVND_PATH = RAW_DIR / "USDVND.csv"
 
 
 # =============================================================================
 # Helpers
 # =============================================================================
-
-def _check_usdvnd() -> bool:
-    """
-    Kiểm tra file USDVND.csv đã có chưa.
-    Nếu chưa: in hướng dẫn tải thủ công và return False.
-    """
-    if USDVND_PATH.exists():
-        logger.info(f"[USDVND] ✅ File tồn tại: {USDVND_PATH}")
-        return True
-
-    print("\n" + "=" * 65)
-    print("❌  THIẾU FILE TỶ GIÁ: data/raw/USDVND.csv")
-    print("=" * 65)
-    print("File này cần tải THỦ CÔNG từ investing.com (không tự động được).")
-    print()
-    print("Hướng dẫn:")
-    print("  1. Truy cập: https://www.investing.com/currencies/usd-vnd-historical-data")
-    print("  2. Đăng nhập tài khoản (free, cần email)")
-    print("  3. Nhấn biểu tượng lịch (date picker) phía trên bảng dữ liệu")
-    print("     → Start: 01/01/2012  |  End: 31/12/2024  → Apply")
-    print("  4. Nhấn nút Download (biểu tượng ↓ góc trên phải bảng)")
-    print("  5. File tải về có tên dạng: 'USD_VND Historical Data.csv'")
-    print(f"  6. Đổi tên thành 'USDVND.csv' → đặt vào: {USDVND_PATH}")
-    print()
-    print("Sau đó chạy lại script này.")
-    print("=" * 65 + "\n")
-    return False
-
 
 def _download_ticker(ticker: str) -> bool:
     """
@@ -134,15 +106,6 @@ def _print_summary(results: dict[str, pd.DataFrame]) -> None:
             f"{gaps:>8}  {note_str}"
         )
 
-    # USDVND summary
-    if USDVND_PATH.exists():
-        try:
-            df_fx = pd.read_csv(USDVND_PATH)
-            rows_fx = len(df_fx)
-            print(f"{'USDVND':<8}  {'(see CSV)':<12}  {'':12}  {rows_fx:>6,}  {'':>8}  FX rate file OK")
-        except Exception:
-            print(f"{'USDVND':<8}  ⚠️  Đọc được file nhưng không parse được")
-
     print("=" * 72 + "\n")
 
 
@@ -154,13 +117,12 @@ def main() -> None:
     """
     Entry point chính của script.
     Thứ tự:
-      1. Check USDVND.csv (bắt buộc phải có trước)
-      2. Download cổ phiếu nếu thiếu
-      3. Load lại để in summary
-      4. In hướng dẫn bước tiếp theo
+      1. Download cổ phiếu nếu thiếu (VND only — không cần USDVND.csv)
+      2. Load lại để in summary
+      3. In hướng dẫn bước tiếp theo
     """
     print("\n" + "═" * 65)
-    print("  VNSP — Data Download Script")
+    print("  VNSP — Data Download Script (VND only)")
     print(f"  Range: {DATE_START} → {DATE_END}")
     print(f"  Tickers: {', '.join(TICKERS)}")
     print("═" * 65)
@@ -168,11 +130,7 @@ def main() -> None:
     # Đảm bảo thư mục raw tồn tại
     RAW_DIR.mkdir(parents=True, exist_ok=True)
 
-    # ── Bước 1: USDVND (bắt buộc có trước) ──────────────────────────────────
-    if not _check_usdvnd():
-        sys.exit(1)  # Dừng, chờ người dùng tải thủ công
-
-    # ── Bước 2: Cổ phiếu ─────────────────────────────────────────────────────
+    # ── Bước 1: Cổ phiếu ─────────────────────────────────────────────────────
     all_csv_exist = all(
         (RAW_DIR / f"{t}_raw.csv").exists() for t in TICKERS
     )
@@ -187,7 +145,7 @@ def main() -> None:
             logger.error(f"❌ Tải thất bại cho: {failed}. Kiểm tra kết nối và chạy lại.")
             sys.exit(1)
 
-    # ── Bước 3: Load và in summary ────────────────────────────────────────────
+    # ── Bước 2: Load và in summary ────────────────────────────────────────────
     results: dict[str, pd.DataFrame] = {}
     for ticker in TICKERS:
         csv_path = RAW_DIR / f"{ticker}_raw.csv"
@@ -200,7 +158,7 @@ def main() -> None:
 
     _print_summary(results)
 
-    # ── Bước 4: Hướng dẫn tiếp theo ──────────────────────────────────────────
+    # ── Bước 3: Hướng dẫn tiếp theo ──────────────────────────────────────────
     print("✅ Data ready. Run preprocessing next:")
     print("   uv run python scripts/preprocess.py\n")
 

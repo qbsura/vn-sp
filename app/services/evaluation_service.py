@@ -7,7 +7,6 @@ Cung cấp 4 hàm công khai:
   - load_all_results()              → pd.DataFrame  (raw flat table)
   - create_comparison_table(...)    → pd.DataFrame  (replica Table 1 bài báo)
   - get_best_model_per_condition()  → pd.DataFrame  (best model per condition)
-  - compare_vnd_vs_usd()            → pd.DataFrame  (VND vs USD side-by-side)
 
 Cấu trúc metrics.json (đọc từ experiments/):
   {
@@ -368,13 +367,6 @@ def get_best_model_per_condition(df_results: pd.DataFrame) -> pd.DataFrame:
     ).reset_index(drop=True)
 
     return df_best
-
-
-# =============================================================================
-# 4. VND vs USD COMPARISON
-# =============================================================================
-
-def compare_vnd_vs_usd(df_results: pd.DataFrame) -> pd.DataFrame:
     """
     So sánh metrics của VND vs USD cho cùng ticker/model/wavelet/task.
 

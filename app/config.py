@@ -7,7 +7,7 @@ Không hardcode bất kỳ giá trị nào ở nơi khác — luôn import từ 
 
 # ── Experiment matrix ────────────────────────────────────────────────────────
 TICKERS = ["VCB", "VIC"]          # Vietcombank, Vingroup
-CURRENCIES = ["VND", "USD"]
+CURRENCIES = ["VND"]
 WAVELET_CONDITIONS = [True, False] # True = dùng SWT, False = raw features
 MODELS = ["DNN", "RNN", "GRU", "LSTM", "BiLSTM"]
 TASKS = ["regression", "classification"]

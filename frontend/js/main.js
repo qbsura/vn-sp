@@ -29,20 +29,16 @@ let api, ui, charts;
 
 const MODELS      = ['DNN', 'RNN', 'GRU', 'LSTM', 'BiLSTM'];
 const TICKERS     = ['VCB', 'VIC'];
-const CURRENCIES  = ['VND', 'USD'];
+const CURRENCIES  = ['VND'];  // Chỉ VND — USD đã bị loại theo yêu cầu giảng viên
 const FOLDS       = [1, 2, 3];
 const FOLD_LABELS = { 1: 'Fold 1 (2018)', 2: 'Fold 2 (2020)', 3: 'Fold 3 (2022–24)' };
 
-/** 8 column conditions for the matrix (matches api_experiments.py order) */
+/** 4 column conditions for the matrix — VND only (2T × 1C × 2W) */
 const MATRIX_CONDITIONS = [
   { ticker:'VCB', currency:'VND', wavelet:true  },
   { ticker:'VCB', currency:'VND', wavelet:false },
-  { ticker:'VCB', currency:'USD', wavelet:true  },
-  { ticker:'VCB', currency:'USD', wavelet:false },
   { ticker:'VIC', currency:'VND', wavelet:true  },
   { ticker:'VIC', currency:'VND', wavelet:false },
-  { ticker:'VIC', currency:'USD', wavelet:true  },
-  { ticker:'VIC', currency:'USD', wavelet:false },
 ];
 
 /** Auto-refresh interval for matrix (ms) */
@@ -209,7 +205,7 @@ async function loadDataStatus() {
     const rawItems = Object.entries(raw).map(([k, ok]) =>
       `<div class="status-item ${ok ? 'ok' : 'missing'}">
          <span class="file-icon"></span>
-         <span>${k}${k !== 'USDVND' ? '_raw.csv' : '.csv'}</span>
+         <span>${k}_raw.csv</span>
        </div>`
     );
 
@@ -245,7 +241,7 @@ async function loadRawData() {
         fmt: (v) => {
           if (k === 'Date') return v;
           if (k === 'Volume') return Number(v).toLocaleString();
-          return currency === 'USD' ? fmt(v, 4) : Number(v).toLocaleString('vi-VN');
+          return Number(v).toLocaleString('vi-VN');
         },
       }))
     );
@@ -315,7 +311,7 @@ async function triggerPreprocess() {
 // SECTION: EXPERIMENTS
 // =============================================================================
 
-/** Build the 40-cell experiment matrix. */
+/** Build the 20-cell experiment matrix (VND only: 5M × 4 cond). */
 async function loadExperimentMatrix() {
   const taskFilter = sel('matrix-task-filter') || 'regression';
   const body = document.getElementById('matrix-body');
@@ -825,26 +821,6 @@ async function loadFig11() {
   } catch (_) { /* toast */ } finally { ui.hideSpinner(); }
 }
 
-async function loadVndVsUsd() {
-  ui.showSpinner('Loading VND vs USD comparison…');
-  try {
-    const data = await api.getVndVsUsd();
-    const { columns, data: rows } = data;
-
-    // Build dynamic headers and rows
-    const thead = document.getElementById('vnd-usd-thead');
-    const tbody = document.getElementById('vnd-usd-tbody');
-    if (!columns?.length) {
-      tbody.innerHTML = `<tr><td class="table-empty">No data.</td></tr>`;
-      return;
-    }
-    thead.innerHTML = `<tr>${columns.map(c => `<th>${c}</th>`).join('')}</tr>`;
-    tbody.innerHTML = rows.map(row =>
-      `<tr>${columns.map(c => `<td>${row[c] != null ? fmt(row[c], 4) : '—'}</td>`).join('')}</tr>`
-    ).join('');
-  } catch (_) { /* toast */ } finally { ui.hideSpinner(); }
-}
-
 // ── Walk-Forward Stability ─────────────────────────────────────────────────────
 // Gọi /api/viz/walkforward → trả về base64 image, render vào img-container.
 // Params: ticker, currency, task (regression|classification), metric, wavelet.
@@ -917,7 +893,6 @@ function attachEventListeners() {
   on('btn-fig10', loadFig10);
   // Figures section — fig11, vnd-usd, walk-forward
   on('btn-load-fig11',   loadFig11);
-  on('btn-load-vnd-usd', loadVndVsUsd);
   on('btn-load-wf',      loadWf);
 
   // Enable sort on static tables

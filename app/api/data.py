@@ -7,7 +7,7 @@ Endpoints:
   GET  /api/data/status                  → kiểm tra CSV/PKL files tồn tại chưa
   GET  /api/data/{ticker}/raw            → xem raw OHLCV data (JSON)
   GET  /api/data/{ticker}/features       → xem features sau preprocessing
-  GET  /api/data/{ticker}/deviation-plot → Fig. 2: Deviation scatter plot (base64 PNG)  ← Task 7.2
+  GET  /api/data/{ticker}/deviation-plot → Fig. 2: Deviation scatter plot (base64 PNG)
   POST /api/data/preprocess              → trigger preprocessing pipeline
 
 Tham chiếu:
@@ -44,20 +44,19 @@ def get_data_status() -> dict:
 
     Returns:
         dict:
-          "raw":       {"VCB": bool, "VIC": bool, "USDVND": bool}
-          "processed": {"VCB_VND_wavelet": bool, ..., "VIC_USD_nowave": bool}
+          "raw":       {"VCB": bool, "VIC": bool}
+          "processed": {"VCB_VND_wavelet": bool, ..., "VIC_VND_nowave": bool}
           "all_raw_ready":       bool — tất cả raw CSVs tồn tại
-          "all_processed_ready": bool — tất cả 8 PKLs tồn tại
+          "all_processed_ready": bool — tất cả 4 PKLs tồn tại
     """
     raw_status = {
         ticker: (_RAW_DIR / f"{ticker}_raw.csv").exists()
         for ticker in TICKERS
     }
-    raw_status["USDVND"] = (_RAW_DIR / "USDVND.csv").exists()
 
     processed_status = {}
     for ticker in TICKERS:
-        for currency in CURRENCIES:
+        for currency in CURRENCIES:  # ["VND"] only
             for cond in ["wavelet", "nowave"]:
                 key = f"{ticker}_{currency}_{cond}"
                 processed_status[key] = (_PROCESSED_DIR / f"{key}.pkl").exists()
@@ -77,7 +76,7 @@ def get_data_status() -> dict:
 @router.get("/{ticker}/raw", summary="Xem raw OHLCV data")
 def get_raw_data(
     ticker    : str,
-    currency  : str = Query("VND", description="VND hoặc USD"),
+    currency  : str = Query("VND", description="VND"),
     start_date: Optional[str] = Query(None, description="YYYY-MM-DD"),
     end_date  : Optional[str] = Query(None, description="YYYY-MM-DD"),
     limit     : int = Query(100, ge=1, le=5000, description="Số rows trả về"),
@@ -87,7 +86,7 @@ def get_raw_data(
 
     Args:
         ticker:     "VCB" hoặc "VIC".
-        currency:   "VND" hoặc "USD".
+        currency:   "VND" (duy nhất hỗ trợ).
         start_date: Ngày bắt đầu (YYYY-MM-DD), optional.
         end_date:   Ngày kết thúc (YYYY-MM-DD), optional.
         limit:      Số rows tối đa trả về (1–5000, default 100).
@@ -108,18 +107,6 @@ def get_raw_data(
         )
 
     df = pd.read_csv(csv_path, index_col=0, parse_dates=True)
-
-    # USD conversion nếu cần
-    if currency == "USD":
-        usdvnd_path = _RAW_DIR / "USDVND.csv"
-        if not usdvnd_path.exists():
-            raise HTTPException(
-                status_code = 404,
-                detail      = "USDVND.csv không tồn tại.",
-            )
-        from app.services.data_service import load_usdvnd, convert_to_usd
-        usdvnd = load_usdvnd()
-        df = convert_to_usd(df, usdvnd)
 
     # Filter theo ngày
     if start_date:
@@ -147,7 +134,7 @@ def get_raw_data(
 @router.get("/{ticker}/features", summary="Xem features sau preprocessing")
 def get_features(
     ticker     : str,
-    currency   : str  = Query("VND", description="VND hoặc USD"),
+    currency   : str  = Query("VND", description="VND"),
     use_wavelet: bool = Query(True,  description="True = wavelet features"),
     limit      : int  = Query(50,   ge=1, le=1000),
 ) -> dict:
@@ -200,13 +187,13 @@ def get_features(
 
 
 # =============================================================================
-# DEVIATION SCATTER PLOT  — Fig. 2 bài báo  (Task 7.2)
+# DEVIATION SCATTER PLOT  — Fig. 2 bài báo
 # =============================================================================
 
 @router.get("/{ticker}/deviation-plot", summary="Fig. 2: Deviation vs Close scatter plot")
 def get_deviation_plot(
     ticker  : str,
-    currency: str = Query("VND", description="VND hoặc USD"),
+    currency: str = Query("VND", description="VND"),
 ) -> dict:
     """
     Tạo scatter plot Deviation (Close − Open) vs Close Price — replica Fig. 2 bài báo.
@@ -215,7 +202,7 @@ def get_deviation_plot(
 
     Args:
         ticker:   "VCB" hoặc "VIC".
-        currency: "VND" hoặc "USD" — nếu USD, convert trước khi vẽ.
+        currency: "VND" (duy nhất hỗ trợ).
 
     Returns:
         {"image": "data:image/png;base64,...", "ticker": str, "currency": str}
@@ -244,18 +231,6 @@ def get_deviation_plot(
 
     df = pd.read_csv(csv_path, index_col=0, parse_dates=True)
 
-    # USD conversion nếu cần (dùng cùng logic với get_raw_data)
-    if currency == "USD":
-        usdvnd_path = _RAW_DIR / "USDVND.csv"
-        if not usdvnd_path.exists():
-            raise HTTPException(
-                status_code = 404,
-                detail      = "USDVND.csv không tồn tại.",
-            )
-        from app.services.data_service import load_usdvnd, convert_to_usd
-        usdvnd = load_usdvnd()
-        df = convert_to_usd(df, usdvnd)
-
     # ── Tính Deviation ────────────────────────────────────────────────────────
     # Deviation = Close - Open: đo áp lực mua/bán trong phiên
     if "Close" not in df.columns or "Open" not in df.columns:
@@ -281,13 +256,12 @@ def get_deviation_plot(
     ax.axhline(y=0, color="#E53935", linewidth=1.0, linestyle="--", alpha=0.7,
                label="Deviation = 0")
 
-    currency_unit = "USD" if currency == "USD" else "VND"
     ax.set_title(
-        f"{ticker} — Deviation Changes as Stock Price Increases ({currency_unit})",
+        f"{ticker} — Deviation Changes as Stock Price Increases (VND)",
         fontsize   = 13,
         fontweight = "bold",
     )
-    ax.set_xlabel(f"Close Price ({currency_unit})", fontsize=11)
+    ax.set_xlabel("Close Price (VND)", fontsize=11)
     ax.set_ylabel("Deviation (Close − Open)", fontsize=11)
     ax.legend(fontsize=10)
     ax.grid(alpha=0.25)
@@ -318,7 +292,7 @@ def trigger_preprocess(
     use_wavelet: bool = True,
 ) -> dict:
     """
-    Chạy preprocessing pipeline cho một (ticker, currency, wavelet) combination.
+    Chạy preprocessing pipeline cho một (ticker, wavelet) combination.
 
     Gọi trực tiếp scripts/preprocess.py pipeline qua subprocess.
     Lưu kết quả ra data/processed/{ticker}_{currency}_{cond}.pkl.

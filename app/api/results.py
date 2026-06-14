@@ -7,7 +7,6 @@ Endpoints:
   GET /api/results/summary                      → tất cả kết quả (DataFrame → JSON)
   GET /api/results/comparison-table             → Table 1 bài báo (5 models × before/after)
   GET /api/results/best-models                  → best model per condition
-  GET /api/results/vnd-vs-usd                   → VND vs USD comparison
   GET /api/results/{exp_id}/predictions         → y_true và y_pred cho visualization
   GET /api/results/{exp_id}/classification-report → Accuracy, F1, AUC per fold  ← Task 7.4
   GET /api/results/{exp_id}/confusion-matrix    → raw confusion matrix data       ← Task 7.4
@@ -183,56 +182,6 @@ def get_best_models(
 
     records = best.where(best.notna(), None).to_dict(orient="records")
     return {"n_rows": len(records), "data": records}
-
-
-# =============================================================================
-# VND vs USD COMPARISON
-# =============================================================================
-
-@router.get("/vnd-vs-usd", summary="VND vs USD comparison table")
-def get_vnd_vs_usd(
-    ticker: Optional[str] = Query(None),
-    task  : Optional[str] = Query(None),
-) -> dict:
-    """
-    So sánh metrics của VND vs USD cho cùng ticker/model/condition.
-
-    Returns:
-        {"n_rows": int, "columns": list, "data": list[dict]}
-    """
-    from app.services.evaluation_service import load_all_results, compare_vnd_vs_usd
-
-    df = load_all_results()
-    if df.empty:
-        return {"n_rows": 0, "columns": [], "data": []}
-
-    if ticker:
-        df = df[df["ticker"] == ticker]
-    if task:
-        df = df[df["task"] == task]
-
-    comp = compare_vnd_vs_usd(df)
-    if comp.empty:
-        return {"n_rows": 0, "columns": [], "data": []}
-
-    # Flatten MultiIndex columns → "VND_MSE", "USD_MSE", "Delta_MSE" etc.
-    flat_cols = []
-    for col in comp.columns:
-        if isinstance(col, tuple):
-            top, sub = col
-            if top == "":
-                flat_cols.append(sub)
-            else:
-                flat_cols.append(
-                    f"{top}_{sub}".replace(" ", "_").replace("(", "").replace(")", "")
-                )
-        else:
-            flat_cols.append(str(col))
-    comp.columns = flat_cols
-
-    records = comp.where(comp.notna(), None).to_dict(orient="records")
-    return {"n_rows": len(records), "columns": flat_cols, "data": records}
-
 
 # =============================================================================
 # PREDICTIONS (cho visualization)

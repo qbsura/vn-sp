@@ -109,9 +109,9 @@ Ví dụ:
     )
     parser.add_argument(
         "--currency",
-        choices=["VND", "USD"],
+        choices=["VND"],         
         default=None,
-        help="Lọc theo currency. None = cả VND và USD.",
+        help="Lọc theo currency. Chỉ hỗ trợ VND.",
     )
     parser.add_argument(
         "--wavelet",

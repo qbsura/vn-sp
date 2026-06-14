@@ -261,11 +261,6 @@ async function getBestModels(ticker = null, currency = null) {
   return _fetch(`${API_BASE}/results/best-models${_qs({ ticker, currency })}`);
 }
 
-/** GET /api/results/vnd-vs-usd */
-async function getVndVsUsd(ticker = null, task = null) {
-  return _fetch(`${API_BASE}/results/vnd-vs-usd${_qs({ ticker, task })}`);
-}
-
 /**
  * GET /api/results/{expId}/predictions
  * @param {string} expId
@@ -486,14 +481,6 @@ async function getVizFigClassificationTable(ticker = 'VCB', currency = 'VND', wa
 }
 
 /**
- * GET /api/viz/fig-vnd-vs-usd — VND vs USD side-by-side metric comparison table
- * @param {string} [modelName]  'DNN' | 'RNN' | 'GRU' | 'LSTM' | 'BiLSTM'
- */
-async function getVizFigVndVsUsd(modelName = 'BiLSTM') {
-  return _fetch(`${API_BASE}/viz/fig-vnd-vs-usd${_qs({ model_name: modelName })}`);
-}
-
-/**
  * GET /api/viz/fig-walkforward — Walk-forward stability chart cho một experiment cụ thể
  * @param {string} expId  Experiment ID đầy đủ (e.g. 'VCB_VND_wavelet_BiLSTM_regression')
  */
@@ -587,7 +574,6 @@ window.VNSP.api = {
   getResultsSummary,
   getComparisonTable,
   getBestModels,
-  getVndVsUsd,
   getPredictions,
   getClassificationReport,
   getConfusionMatrix,
@@ -613,7 +599,6 @@ window.VNSP.api = {
   getVizWalkforward,
   getVizRocCurves,
   getVizFigClassificationTable,
-  getVizFigVndVsUsd,
   getVizFigWalkforward,
   getVizFigCumulativeReturn,
   // Polling
