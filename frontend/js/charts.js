@@ -59,44 +59,166 @@ const BASE_OPTIONS = {
   },
 };
 
-// ── chartjs-plugin-zoom config (loaded via CDN: hammerjs + chartjs-plugin-zoom) ─
-// Plugin auto-registers when loaded as UMD. Config lives in options.plugins.zoom.
+// =============================================================================
+// CUSTOM ZOOM/PAN — không dùng chartjs-plugin-zoom (CDN không ổn định)
+// Thiết kế: Google Maps style
+//   - Wheel: zoom vào/ra tại VỊ TRÍ CON TRỎ (điểm neo cố định)
+//   - Drag (mousedown + mousemove): pan/kéo thả
+//   - Dblclick: reset về toàn bộ data
+// =============================================================================
 
-// Line / time-series charts: zoom only the X (time) axis.
-// Y axis auto-scales to show the full range of visible data.
-// This prevents the "converging to 1 / 0%" issue on cumulative return charts.
-const _ZOOM_OPTS_X = {
-  zoom: {
-    wheel: { enabled: true, speed: 0.1 },
-    pinch: { enabled: true },
-    mode: 'x',  // ← X-axis only
-  },
-  pan: {
-    enabled: true,
-    mode: 'x',
-  },
-};
+/**
+ * Lấy current visible range của scale.
+ * Chart.js category scale: min/max là index (0..N-1).
+ * Chart.js linear scale: min/max là giá trị thực.
+ */
+function _getRange(scale, fallbackMax) {
+  const min = (scale.min !== undefined && scale.min !== null && !isNaN(Number(scale.min)))
+    ? Number(scale.min) : 0;
+  const max = (scale.max !== undefined && scale.max !== null && !isNaN(Number(scale.max)))
+    ? Number(scale.max) : fallbackMax;
+  return { min, max };
+}
 
-// Scatter / ROC chart: zoom both axes (the chart is a 0-1 unit square).
-const _ZOOM_OPTS_XY = {
-  zoom: {
-    wheel: { enabled: true, speed: 0.1 },
-    pinch: { enabled: true },
-    mode: 'xy',
-  },
-  pan: {
-    enabled: true,
-    mode: 'xy',
-  },
-};
+/**
+ * Attach custom wheel-zoom + drag-pan lên một Chart.js chart.
+ * Không cần plugin ngoài — hoạt động với Chart.js 4.x thuần.
+ *
+ * @param {Chart}    chart - Chart.js instance
+ * @param {'x'|'xy'} mode - 'x' = zoom X axis only, 'xy' = cả 2 trục
+ */
+function _attachZoomPan(chart, mode = 'x') {
+  const canvas = chart.canvas;
+  if (!canvas) return;
 
-/** Attach double-click → resetZoom() on the chart's canvas. */
-function _attachZoomReset(chart) {
-  if (chart?.canvas) {
-    chart.canvas.addEventListener('dblclick', () => {
-      try { chart.resetZoom(); } catch (_) {}
-    });
-  }
+  // Số điểm data trên X (dùng làm bound khi clamp)
+  const xDataMax = () =>
+    Math.max(0, (chart.data.labels?.length ?? chart.data.datasets[0]?.data?.length ?? 1) - 1);
+
+  let isDragging = false;
+  let dragStart  = { x: 0, y: 0 };
+  let dragRange  = { xMin: 0, xMax: 1, yMin: 0, yMax: 1 };
+
+  // ── WHEEL ZOOM — tại vị trí con trỏ ────────────────────────────────────────
+  canvas.addEventListener('wheel', (e) => {
+    e.preventDefault();
+
+    const rect      = canvas.getBoundingClientRect();
+    const chartArea = chart.chartArea;
+    // scroll down = zoom out (factor >1), scroll up = zoom in (factor <1)
+    const factor    = e.deltaY > 0 ? 1.15 : 0.87;
+
+    // ── X axis ────────────────────────────────────────────────────────────────
+    const xN    = xDataMax();
+    const xScl  = chart.scales.x;
+    const { min: xMin, max: xMax } = _getRange(xScl, xN);
+    const xRange = xMax - xMin;
+
+    // Tỉ lệ cursor trong chartArea [0..1]
+    const xRatio  = Math.max(0, Math.min(1,
+      (e.clientX - rect.left - chartArea.left) / chartArea.width
+    ));
+    // Điểm neo: giữ cố định data value tại cursor khi zoom
+    const xAnchor   = xMin + xRatio * xRange;
+    const newXRange = xRange * factor;
+
+    chart.options.scales.x.min = Math.max(0,  xAnchor - xRatio       * newXRange);
+    chart.options.scales.x.max = Math.min(xN, xAnchor + (1 - xRatio) * newXRange);
+
+    // ── Y axis (chỉ khi mode='xy') ────────────────────────────────────────────
+    if (mode === 'xy') {
+      const yScl  = chart.scales.y;
+      const { min: yMin, max: yMax } = _getRange(yScl, 1);
+      const yRange = yMax - yMin;
+
+      const yRatio  = Math.max(0, Math.min(1,
+        (e.clientY - rect.top - chartArea.top) / chartArea.height
+      ));
+      // Y pixel tăng xuống dưới, data tăng lên trên → invert ratio
+      const yAnchor   = yMax - yRatio * yRange;
+      const newYRange = yRange * factor;
+
+      chart.options.scales.y.min = Math.max(0, yAnchor - (1 - yRatio) * newYRange);
+      chart.options.scales.y.max = Math.min(1, yAnchor + yRatio       * newYRange);
+    }
+
+    chart.update('none');  // 'none' = bỏ animation → mượt
+  }, { passive: false });
+
+  // ── DRAG PAN — kéo thả như Google Maps ────────────────────────────────────
+  canvas.addEventListener('mousedown', (e) => {
+    if (e.button !== 0) return;  // chỉ left-click
+    isDragging     = true;
+    dragStart      = { x: e.clientX, y: e.clientY };
+    const xN       = xDataMax();
+    const { min: xMin, max: xMax } = _getRange(chart.scales.x, xN);
+    dragRange.xMin = xMin;
+    dragRange.xMax = xMax;
+    if (mode === 'xy') {
+      const { min: yMin, max: yMax } = _getRange(chart.scales.y, 1);
+      dragRange.yMin = yMin;
+      dragRange.yMax = yMax;
+    }
+    canvas.style.cursor = 'grabbing';
+  });
+
+  canvas.addEventListener('mousemove', (e) => {
+    if (!isDragging) return;
+
+    const chartArea = chart.chartArea;
+    const xN        = xDataMax();
+
+    // Pan X: delta pixel → delta data units
+    const dx      = e.clientX - dragStart.x;
+    const xRange  = dragRange.xMax - dragRange.xMin;
+    const xDelta  = -(dx / chartArea.width) * xRange;
+    let newXMin   = dragRange.xMin + xDelta;
+    let newXMax   = dragRange.xMax + xDelta;
+
+    // Clamp: không vượt bounds nhưng giữ nguyên range (không stretch)
+    if (newXMin < 0)  { newXMin = 0;  newXMax = xRange; }
+    if (newXMax > xN) { newXMax = xN; newXMin = xN - xRange; }
+
+    chart.options.scales.x.min = newXMin;
+    chart.options.scales.x.max = newXMax;
+
+    if (mode === 'xy') {
+      const dy     = e.clientY - dragStart.y;
+      const yRange = dragRange.yMax - dragRange.yMin;
+      const yDelta = (dy / chartArea.height) * yRange;  // y inverted
+      let newYMin  = dragRange.yMin + yDelta;
+      let newYMax  = dragRange.yMax + yDelta;
+
+      if (newYMin < 0) { newYMin = 0; newYMax = yRange; }
+      if (newYMax > 1) { newYMax = 1; newYMin = 1 - yRange; }
+
+      chart.options.scales.y.min = newYMin;
+      chart.options.scales.y.max = newYMax;
+    }
+
+    chart.update('none');
+  });
+
+  const _stopDrag = () => {
+    if (!isDragging) return;
+    isDragging          = false;
+    canvas.style.cursor = 'default';
+  };
+  canvas.addEventListener('mouseup',    _stopDrag);
+  canvas.addEventListener('mouseleave', _stopDrag);
+
+  // ── DOUBLE-CLICK RESET ─────────────────────────────────────────────────────
+  canvas.addEventListener('dblclick', () => {
+    chart.options.scales.x.min = undefined;
+    chart.options.scales.x.max = undefined;
+    if (mode === 'xy') {
+      chart.options.scales.y.min = undefined;
+      chart.options.scales.y.max = undefined;
+    }
+    chart.update('none');
+  });
+
+  canvas.style.cursor = 'default';
 }
 
 // ── Best epoch vertical line plugin (for loss curves) ────────────────────────
@@ -179,12 +301,11 @@ function buildPredChart(canvasId, seriesList) {
       ...BASE_OPTIONS,
       plugins: {
         ...BASE_OPTIONS.plugins,
-        zoom: _ZOOM_OPTS_X,  // X-axis only: Y auto-scales (avoids converge-to-0 on cumulative returns)
         title: { display: true, text: 'Predicted vs Actual Close Price (VND)', color: '#e0e0e0', font: { size: 12 } },
       },
     },
   });
-  _attachZoomReset(chart);
+  _attachZoomPan(chart, 'x');
   _chartInstances[canvasId] = chart;
 }
 
@@ -225,7 +346,6 @@ function buildLossChart(canvasId, data) {
       ...BASE_OPTIONS,
       plugins: {
         ...BASE_OPTIONS.plugins,
-        zoom: _ZOOM_OPTS_X,  // X-axis only: Y auto-scales (avoids converge-to-0 on cumulative returns)
         title: {
           display: true,
           text: data.model_label || 'Loss Curves',
@@ -241,7 +361,7 @@ function buildLossChart(canvasId, data) {
     // _bestEpochPlugin is an inline plugin (chart-level), separate from options.plugins
     plugins: [_bestEpochPlugin(data.best_epoch)],
   });
-  _attachZoomReset(chart);
+  _attachZoomPan(chart, 'x');
   _chartInstances[canvasId] = chart;
 }
 
@@ -298,7 +418,6 @@ function buildTradingLineChart(canvasId, seriesList, showWavelet = true) {
       interaction: { mode: 'index', intersect: false },
       plugins: {
         ...BASE_OPTIONS.plugins,
-        zoom: _ZOOM_OPTS_X,  // X-axis only: Y auto-scales (avoids converge-to-0 on cumulative returns)
         title: {
           display: true,
           text: `Cumulative Returns (Weekly) — ${showWavelet ? 'With Wavelet' : 'No Wavelet'} | Strategy vs Buy & Hold`,
@@ -321,7 +440,7 @@ function buildTradingLineChart(canvasId, seriesList, showWavelet = true) {
       },
     },
   });
-  _attachZoomReset(chart);
+  _attachZoomPan(chart, 'xy');
   _chartInstances[canvasId] = chart;
 }
 
@@ -373,7 +492,6 @@ function buildRocOverlayChart(canvasId, rocList) {
       showLine: true,
       plugins: {
         ...BASE_OPTIONS.plugins,
-        zoom: _ZOOM_OPTS_XY, // ROC is a 0-1 unit square → allow both-axis zoom
         title: { display: true, text: 'ROC Curves — All Models (Fold selected)', color: '#e0e0e0', font: { size: 12 } },
       },
       scales: {
@@ -388,7 +506,7 @@ function buildRocOverlayChart(canvasId, rocList) {
       },
     },
   });
-  _attachZoomReset(chart);
+  _attachZoomPan(chart, 'x');
   _chartInstances[canvasId] = chart;
 }
 

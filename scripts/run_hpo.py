@@ -29,6 +29,7 @@ Resume: Skip combination neu ca 3 fold best_params*.json da ton tai (task-specif
 """
 
 import argparse
+import json
 import logging
 import os
 import sys
@@ -70,18 +71,42 @@ def _params_filename(task: str) -> str:
 
 def _all_folds_done(ticker: str, currency: str, use_wavelet: bool, task: str) -> bool:
     """
-    Kiem tra tat ca 3 fold best_params file da ton tai cho combination + task nay.
+    Kiem tra tat ca 3 fold da co ket qua HPO HOP LE cho combination + task nay.
 
-    Resume logic: neu ca 3 folds da co -> skip toan bo combination.
+    Resume logic: chi SKIP khi ca 3 folds:
+      1. File best_params*.json ton tai
+      2. best_val_loss doc duoc tu file < 1e10 (khong phai inf / ket qua buggy)
+
+    Neu bat ky fold nao thieu file HOAC co best_val_loss >= 1e10 (buggy):
+      → tra ve False → HPO se chay lai cho combination do.
     """
     fname = _params_filename(task)
-    return all(
-        (EXPERIMENTS_DIR
-         / f"{ticker}_{currency}_{'wavelet' if use_wavelet else 'nowave'}"
-         / f"fold_{fold['fold_id']}"
-         / fname).exists()
-        for fold in FOLDS
-    )
+    cond_str = "wavelet" if use_wavelet else "nowave"
+
+    for fold in FOLDS:
+        path = (
+            EXPERIMENTS_DIR
+            / f"{ticker}_{currency}_{cond_str}"
+            / f"fold_{fold['fold_id']}"
+            / fname
+        )
+
+        # Kiem tra file ton tai
+        if not path.exists():
+            return False
+
+        # Doc file va kiem tra best_val_loss hop le
+        try:
+            with open(path, encoding="utf-8") as f:
+                d = json.load(f)
+            val_loss = d.get("_meta", {}).get("best_val_loss", float("inf"))
+            if val_loss >= 1e10:  # inf hoac qua lon = ket qua buggy (run loi truoc)
+                return False
+        except Exception:
+            # JSON corrupt hoac khong doc duoc → chay lai
+            return False
+
+    return True
 
 
 def _parse_bool(s: str) -> bool:
@@ -115,6 +140,16 @@ def main() -> None:
             "Ket qua luu vao best_params.json hoac best_params_classification.json."
         ),
     )
+    parser.add_argument(
+        "--force-rerun",
+        action="store_true",
+        default=False,
+        help=(
+            "Xoa file best_params*.json cu (ke ca ket qua buggy co best_val_loss=inf) "
+            "va chay lai HPO tu dau cho cac combination duoc chi dinh. "
+            "Dung khi can override ket qua tu lan chay truoc bi loi."
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -146,7 +181,28 @@ def main() -> None:
         cond_str = "wavelet" if use_wavelet else "nowave"
         label    = f"[{idx}/{total}] {ticker}_{currency}_{cond_str} (task={args.task})"
 
-        # Resume check (task-aware)
+        # --force-rerun: xoa file best_params*.json cu cho combination nay
+        # (ke ca ket qua buggy co best_val_loss=inf)
+        if args.force_rerun:
+            fname = _params_filename(args.task)
+            deleted_any = False
+            for fold in FOLDS:
+                stale_path = (
+                    EXPERIMENTS_DIR
+                    / f"{ticker}_{currency}_{cond_str}"
+                    / f"fold_{fold['fold_id']}"
+                    / fname
+                )
+                if stale_path.exists():
+                    stale_path.unlink()
+                    deleted_any = True
+                    logging.getLogger(__name__).info(
+                        "[force-rerun] Deleted stale: %s", stale_path
+                    )
+            if deleted_any:
+                print(f"  {label} -- force-rerun: da xoa file {fname} cu")
+
+        # Resume check (task-aware, kiem tra best_val_loss hop le)
         if _all_folds_done(ticker, currency, use_wavelet, args.task):
             skipped += 1
             print(f"  {label} -- SKIP (all 3 folds done for task={args.task})")

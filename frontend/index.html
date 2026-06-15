@@ -376,7 +376,7 @@
         <div class="card">
           <div class="card-header">
             <span class="card-title">Training Loss Curves — All Models</span>
-            <span class="text-dim" style="font-size:11px">Double-click chart to reset zoom</span>
+            <span class="text-dim" style="font-size:11px">Scroll: zoom tại con trỏ · Drag: pan · Dblclick: reset</span>
           </div>
           <div class="card-body">
             <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:14px">
@@ -471,7 +471,7 @@
         <div class="card">
           <div class="card-header">
             <span class="card-title">ROC Curves — All Models Overlay</span>
-            <span class="text-dim" style="font-size:11px">Dashed = No Wavelet · Double-click to reset zoom</span>
+            <span class="text-dim" style="font-size:11px">Dashed = No Wavelet · Scroll zoom · Drag pan · Dblclick reset</span>
           </div>
           <div class="card-body">
             <div class="chart-container roc-container">
@@ -524,7 +524,7 @@
         <div class="card">
           <div class="card-header">
             <span class="card-title">Cumulative Returns vs Buy &amp; Hold</span>
-            <span class="text-dim" style="font-size:11px">Double-click to reset zoom</span>
+            <span class="text-dim" style="font-size:11px">Scroll zoom · Drag pan · Dblclick reset</span>
           </div>
           <div class="card-body">
             <div class="chart-container trade-container">
@@ -568,9 +568,7 @@
 
 <!-- ── Scripts ───────────────────────────────────────────────────────────────── -->
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.2/dist/chart.umd.min.js"></script>
-<!-- hammerjs must load BEFORE chartjs-plugin-zoom (peer dependency for pinch/pan) -->
-<script src="https://cdn.jsdelivr.net/npm/hammerjs@2.0.8/hammer.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.0.1/dist/chartjs-plugin-zoom.min.js"></script>
+<!-- Zoom/Pan: custom implementation in charts.js (không dùng plugin CDN) -->
 <script src="/static/js/api.js"></script>
 <script src="/static/js/charts.js"></script>
 <script src="/static/js/main.js"></script>

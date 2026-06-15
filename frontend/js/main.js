@@ -276,8 +276,10 @@ function _renderRegressionTable(tbl, showWavelet) {
   _renderRegressionHalf('reg-metrics-tbody', models, primaryData);
 
   // 2 + 3. Before/After comparison tables (always both)
-  _renderRegressionHalf('reg-tbody-before', models, tbl.before_wavelet);
-  _renderRegressionHalf('reg-tbody-after',  models, tbl.after_wavelet);
+  // Before/After table: 4 metrics only (no R²: API thường null, gây cột trống)
+  const WAVE_METRICS = ['MSE', 'MAE', 'MAPE', 'RMSE'];
+  _renderRegressionHalf('reg-tbody-before', models, tbl.before_wavelet, WAVE_METRICS);
+  _renderRegressionHalf('reg-tbody-after',  models, tbl.after_wavelet,  WAVE_METRICS);
 }
 
 /**
@@ -286,12 +288,14 @@ function _renderRegressionTable(tbl, showWavelet) {
  * @param {string[]} models   Model name list (e.g. ['BiLSTM','LSTM',…])
  * @param {Object}   data     API object: {MSE:[…], MAE:[…], MAPE:[…], …}
  */
-function _renderRegressionHalf(tbodyId, models, data) {
+function _renderRegressionHalf(tbodyId, models, data,
+  /* optional: subset of metrics to show */
+  metrics = ['MSE', 'MAE', 'MAPE', 'RMSE', 'R2']) {
   const tbody = document.getElementById(tbodyId);
   if (!tbody) return;
 
   if (!data) {
-    tbody.innerHTML = `<tr><td colspan="6" class="table-empty">No data.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="${metrics.length + 1}" class="table-empty">No data.</td></tr>`;
     return;
   }
 
@@ -300,8 +304,8 @@ function _renderRegressionHalf(tbodyId, models, data) {
   const rmseArr = mseArr.map(v => (v != null ? Math.sqrt(v) : null));
   const enriched = { ...data, RMSE: rmseArr };
 
-  // metrics shown: RMSE = √MSE (client-side); R² from data if available
-  const metrics = ['MSE', 'MAE', 'MAPE', 'RMSE', 'R2'];
+  // metrics: được truyền từ caller (primary table = 5 cols incl. R²;
+  //          before/after table = 4 cols, không có R² để tránh cột trống)
 
   // Find best per metric: min for MSE/MAE/MAPE/RMSE; max for R²
   const best = {};
